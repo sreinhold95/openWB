@@ -110,7 +110,7 @@ def on_message(client, userdata, msg) -> None:
         log.warning(" Skipped msg " + msg.topic + " Value " + value)
 
 
-def getdevicevalues(uberschuss: int, uberschussoffset: int) -> None:
+def getdevicevalues(uberschuss: int, uberschussoffset: int, pvwatt: int, chargestatus: bool) -> None:
     global mydevices
     totalwatt = 0
     totalwattot = 0
@@ -121,9 +121,12 @@ def getdevicevalues(uberschuss: int, uberschussoffset: int) -> None:
     Sbase.eindevstatus = 0
     mqtt_all = {}
     for mydevice in mydevices:
+        mydevice.pvwatt = pvwatt
+        mydevice.chargestatus = chargestatus
         mydevice.getwatt(uberschuss, uberschussoffset)
         watt = mydevice.newwatt
         wattk = mydevice.newwattk
+        wattks = mydevice.newwattks
         relais = mydevice.relais
         # temp0 = mydevice.temp0
         # temp1 = mydevice.temp1
@@ -142,7 +145,7 @@ def getdevicevalues(uberschuss: int, uberschussoffset: int) -> None:
                  str(mydevice.runningtime) + " Status/Üeb: " +
                  str(mydevice.devstatus) + "/" +
                  str(mydevice.ueberschussberechnung) + " akt: " + str(watt) +
-                 " Z: " + str(wattk))
+                 " Z1: " + str(wattk) + " Z2: " + str(wattks))
         #  mqtt_all.update(mydevice.mqtt_param)
         for keyread, value in mydevice.mqtt_param.items():
             key = mqttsdevstat + keyread
@@ -389,7 +392,8 @@ def resetmaxeinschaltdauerfunc() -> None:
         resetmaxeinschaltdauer = 0
 
 
-def loadregelvars(wattbezug: int, speicherleistung: int, speichersoc: int) -> Tuple[int, int]:
+def loadregelvars(wattbezug: int, speicherleistung: int, speichersoc: int,
+                  pvwatt: int,  chargestatus: bool) -> Tuple[int, int]:
     global maxspeicher
     global mydevices
     uberschuss = wattbezug + speicherleistung
@@ -397,9 +401,9 @@ def loadregelvars(wattbezug: int, speicherleistung: int, speichersoc: int) -> Tu
     log.info("EVU Bezug(-)/Einspeisung(+): " + str(wattbezug) +
              " max Speicherladung: " + str(maxspeicher))
     log.info("Uberschuss: " + str(uberschuss) +
-             " Uberschuss mit Offset: " + str(uberschussoffset))
+             " Uberschuss mit Offset: " + str(uberschussoffset) + " Pv: " + str(pvwatt))
     log.info("Speicher Entladung(-)/Ladung(+): " +
-             str(speicherleistung) + " SpeicherSoC: " + str(speichersoc))
+             str(speicherleistung) + " SpeicherSoC: " + str(speichersoc) + " Ladung: " + str(chargestatus))
     reread = 0
     try:
         with open(bp+'/ramdisk/rereadsmarthomedevices', 'r') as value:
@@ -448,16 +452,17 @@ def initparam(inpcg: str, inpcs: str, inpsdevstat: str, inpsglobstat: str, inpto
     mqttport = inpport
 
 
-def mainloop(wattbezug: int, speicherleistung: int, speichersoc: int) -> None:
+def mainloop(wattbezug: int, speicherleistung: int, speichersoc: int, pvwatt: int = 0,
+             chargestatus: bool = False) -> None:
     global firststart
     if firststart:
         readmq()
         firststart = False
     mqtt_man = {}
     sendmess = 0
-    uberschuss, uberschussoffset = loadregelvars(wattbezug, speicherleistung, speichersoc)
+    uberschuss, uberschussoffset = loadregelvars(wattbezug, speicherleistung, speichersoc, pvwatt, chargestatus)
     resetmaxeinschaltdauerfunc()
-    getdevicevalues(uberschuss, uberschussoffset)
+    getdevicevalues(uberschuss, uberschussoffset, pvwatt, chargestatus)
     conditions(speichersoc)
     # do the manual stuff
     for i in range(1, (numberOfSupportedDevices+1)):

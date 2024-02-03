@@ -61,15 +61,13 @@ class PvAll:
                     try:
                         if "pv" in module:
                             module_data = data.data.pv_data[module].data
-                            self.data.get.power += module_data.get.power
-                            self.data.get.exported += module_data.get.exported
-                            self.data.get.daily_exported += module_data.get.daily_exported
-                            self.data.get.monthly_exported += module_data.get.monthly_exported
-                            self.data.get.yearly_exported += module_data.get.yearly_exported
+                            if module_data.get.fault_state < 2:
+                                self.data.get.power += module_data.get.power
+                                self.data.get.exported += module_data.get.exported
                     except Exception:
                         log.exception("Fehler im allgemeinen PV-Modul für "+str(module))
-                # Alle Summen-Topics im Dict veröffentlichen
-                {Pub().pub("openWB/set/pv/get/"+k, v) for (k, v) in asdict(self.data.get).items()}
+                Pub().pub("openWB/set/pv/get/power", self.data.get.power)
+                Pub().pub("openWB/set/pv/get/exported", self.data.get.exported)
                 self.data.config.configured = True
                 Pub().pub("openWB/set/pv/config/configured", self.data.config.configured)
             else:
