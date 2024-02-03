@@ -3,6 +3,7 @@ from unittest.mock import Mock
 import pytest
 
 from modules.common.component_state import ChargepointState
+from modules.conftest import SAMPLE_IP
 from modules.internal_chargepoint_handler.internal_chargepoint_handler import UpdateValues
 from modules.internal_chargepoint_handler import internal_chargepoint_handler
 
@@ -20,20 +21,18 @@ CHARGEPOINT_STATE = ChargepointState(
 OLD_CHARGEPOINT_STATE = copy.deepcopy(CHARGEPOINT_STATE)
 OLD_CHARGEPOINT_STATE.imported = 80
 
-SAMPLE_IP = "1.1.1.1"
-
 
 @pytest.mark.parametrize(
     "old_chargepoint_state, published_topics",
-    [(None, 12),
-     (OLD_CHARGEPOINT_STATE, 1)]
+    [(None, 34),
+     (OLD_CHARGEPOINT_STATE, 2)]
 
 )
 def test_update_values(old_chargepoint_state, published_topics, monkeypatch):
     # setup
     mock_pub_single = Mock()
     monkeypatch.setattr(internal_chargepoint_handler, "pub_single", mock_pub_single)
-    u = UpdateValues(0, SAMPLE_IP, "1")
+    u = UpdateValues(0, SAMPLE_IP, "1", 1)
     u.old_chargepoint_state = old_chargepoint_state
 
     # execution

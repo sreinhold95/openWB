@@ -45,6 +45,7 @@ def data_() -> None:
     data.data.counter_data["counter6"].data.config.max_total_power = 11000
     data.data.counter_all_data = CounterAll()
     data.data.counter_all_data.data.get.hierarchy = NESTED_HIERARCHY
+    data.data.counter_all_data.data.config.reserve_for_not_charging = True
 
 
 @dataclass
@@ -62,7 +63,6 @@ def assert_expected_current(params: ParamsExpectedSetCurrent):
 @pytest.fixture()
 def all_cp_not_charging():
     for i in range(3, 6):
-        charging_ev_data = data.data.cp_data[f"cp{i}"].data.set.charging_ev_data
         data.data.cp_data[f"cp{i}"].data.get.currents = [0]*3
         data.data.cp_data[f"cp{i}"].data.get.charge_state = False
-        charging_ev_data.data.control_parameter.state = ChargepointState.NO_CHARGING_ALLOWED
+        data.data.cp_data[f"cp{i}"].data.control_parameter.state = ChargepointState.NO_CHARGING_ALLOWED

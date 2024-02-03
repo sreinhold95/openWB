@@ -91,8 +91,8 @@ def test_get_phases_by_selected_chargemode(monkeypatch, cp: Chargepoint, params:
     cp.data.set.log.imported_since_plugged = params.imported_since_plugged
     charging_ev_data = cp.data.set.charging_ev_data
     charging_ev_data.ev_template.data.prevent_phase_switch = params.prevent_phase_switch
-    charging_ev_data.data.control_parameter.timestamp_perform_phase_switch = params.timestamp_perform_phase_switch
-    charging_ev_data.data.control_parameter.phases = params.phases_in_use
+    cp.data.control_parameter.timestamp_perform_phase_switch = params.timestamp_perform_phase_switch
+    cp.data.control_parameter.phases = params.phases_in_use
 
     # execution
     phases = cp.get_phases_by_selected_chargemode()
@@ -152,7 +152,7 @@ cases_set_phases = [
     SetPhasesParams(name="Switch phases", phases=1, phases_in_use=3, prevent_phase_switch=False,
                     imported_since_plugged=1, phase_switch_suppported=True, expected_phases=1),
     SetPhasesParams(name="Phase switch not supported by cp", phases=1, phases_in_use=3, prevent_phase_switch=False,
-                    imported_since_plugged=1, phase_switch_suppported=False, expected_phases=3)
+                    imported_since_plugged=1, phase_switch_suppported=False, expected_phases=1)
 ]
 
 
@@ -165,7 +165,7 @@ def test_set_phases(monkeypatch, cp: Chargepoint, params: SetPhasesParams):
     cp.data.set.log.imported_since_plugged = params.imported_since_plugged
     charging_ev_data = cp.data.set.charging_ev_data
     charging_ev_data.ev_template.data.prevent_phase_switch = params.prevent_phase_switch
-    charging_ev_data.data.control_parameter.phases = params.phases_in_use
+    cp.data.control_parameter.phases = params.phases_in_use
 
     # execution
     phases = cp.set_phases(params.phases)

@@ -1,15 +1,16 @@
 import pytest
+from modules.conftest import SAMPLE_IP
 
 from modules.devices.kostal_steca.config import KostalStecaInverterSetup
 from modules.devices.kostal_steca.inverter import KostalStecaInverter
-
-SAMPLE_IP = "1.1.1.1"
 
 
 @pytest.mark.parametrize("measurements_file, expected_power",
                          [
                              pytest.param("measurements_production.xml", -132.8, id="WR produziert"),
                              pytest.param("measurements_no_production.xml", 0, id="WR produziert nicht"),
+                             pytest.param("measurements_no_production_piko3p6mp.xml", 0,
+                                          id="WR produziert nicht, Piko 3.6 MP"),
                          ])
 def test_get_values(measurements_file, expected_power, requests_mock):
     # setup
