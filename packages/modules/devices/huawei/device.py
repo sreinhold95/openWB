@@ -28,16 +28,25 @@ def create_device(device_config: Huawei):
     def update_components(components: Iterable[Union[HuaweiBat, HuaweiCounter, HuaweiInverter]]):
         with client as c:
             modbus_id = device_config.configuration.modbus_id
-            regs = c.read_holding_registers(32064, [ModbusDataType.INT_32]*5701, unit=modbus_id)
-            counter_currents_reg = regs[5043:5045]  # INT 32, 37107-9
-            counter_power_reg = regs[5049]  # INT32, 37113
-            bat_power_reg = regs[-1]  # INT32, 37765
-            inverter_power_reg = regs[0]  # INT32 32064
+           
+            #---------------------------------------------------------
             # Huawei darf nur mit Regelintervall sehr langsam betrieben werden, daher kann hier eine längere Pause
             # eingelegt werden. Ob auch eine kürzere ausreichend ist, ist nicht getestet.
-            time.sleep(5)
+            #regs = c.read_holding_registers(32064, [ModbusDataType.INT_32]*5701, unit=modbus_id)
+            regs = c.read_holding_registers(32064,[ModbusDataType.INT_32]*18,unit=modbus_id)
+            time.sleep(0.1)
+            regs1 = c.read_holding_registers(37017,[ModbusDataType.INT_32]*32,unit=modbus_id)
+            time.sleep(0.1)
             bat_soc_reg = c.read_holding_registers(37760, ModbusDataType.INT_16, unit=modbus_id)  # Int 16 37760
-
+            time.sleep(0.1)
+            regs2 = c.read_holding_registers(37765,[ModbusDataType.INT_32],unit=modbus_id)
+            inverter_power_reg = regs[0]  # INT32 32064
+            counter_currents_reg = regs1[0:6]  # INT 32, 37107-9
+            counter_power_reg = regs1[7]  # INT32, 37113
+            bat_power_reg = regs2[0]  # INT32, 37765
+            #time.sleep(5)
+            #bat_soc_reg = c.read_holding_registers(37760, ModbusDataType.INT_16, unit=modbus_id)  # Int 16 37760
+            
             for component in components:
                 with SingleComponentUpdateContext(component.fault_state):
                     if isinstance(component, HuaweiBat):
@@ -50,9 +59,10 @@ def create_device(device_config: Huawei):
     try:
         client = ModbusTcpClient_(device_config.configuration.ip_address, 502)
         client.delegate.connect()
-        time.sleep(7)
+        #Testweise veringern zwischen connect und Abfrage
+        time.sleep(4)
     except Exception:
-        log.exception("Fehler in create_device")
+        log.exception("Fehler in create_device: Connect to Dongle failed")
     return ConfigurableDevice(
         device_config=device_config,
         component_factory=ComponentFactoryByType(
