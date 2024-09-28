@@ -6,22 +6,25 @@ from control.algorithm import common
 from control.loadmanagement import LimitingValue, Loadmanagement
 from control.counter import Counter
 from control.chargepoint.chargepoint import Chargepoint
-from control.algorithm.filter_chargepoints import (get_chargepoints_by_mode_and_counter,
-                                                   get_preferenced_chargepoint_charging, get_chargepoints_pv_charging,
-                                                   get_chargepoints_surplus_controlled)
+from control.algorithm.filter_chargepoints import (get_chargepoints_by_mode, get_chargepoints_by_mode_and_counter,
+                                                   get_preferenced_chargepoint_charging)
 from control.chargepoint.chargepoint_state import ChargepointState, CHARGING_STATES
 from modules.common.utils.component_parser import get_component_name_by_id
 
 log = logging.getLogger(__name__)
 
+CONSIDERED_CHARGE_MODES = common.CHARGEMODES[0:2] + common.CHARGEMODES[6:12]
+CONSIDERED_CHARGE_MODES_PV = common.CHARGEMODES[8:12]
+
 
 class SurplusControlled:
+
     def __init__(self) -> None:
         pass
 
-    def set_surplus_current(self, mode_range) -> None:
-        common.reset_current_by_chargemode(common.CHARGEMODES[6:12])
-        for mode_tuple, counter in common.mode_and_counter_generator(mode_range):
+    def set_surplus_current(self) -> None:
+        common.reset_current_by_chargemode(CONSIDERED_CHARGE_MODES)
+        for mode_tuple, counter in common.mode_and_counter_generator(CONSIDERED_CHARGE_MODES):
             preferenced_chargepoints, preferenced_cps_without_set_current = get_preferenced_chargepoint_charging(
                 get_chargepoints_by_mode_and_counter(mode_tuple, f"counter{counter.num}"))
             cp_with_feed_in, cp_without_feed_in = self.filter_by_feed_in_limit(preferenced_chargepoints)
@@ -52,9 +55,9 @@ class SurplusControlled:
             current = common.get_current_to_set(cp.data.set.current, available_for_cp, cp.data.set.target_current)
             self._set_loadmangement_message(current, limit, cp, counter)
             limited_current = self._limit_adjust_current(cp, current)
-            limited_current = self._add_unused_evse_current(limited_current, cp)
+            limited_current = self._fix_deviating_evse_current(limited_current, cp)
             common.set_current_counterdiff(
-                limited_current - cp.data.set.charging_ev_data.ev_template.data.min_current,
+                cp.data.control_parameter.min_current,
                 limited_current,
                 cp,
                 surplus=True)
@@ -104,18 +107,20 @@ class SurplusControlled:
                     current = max(chargepoint.data.get.currents) + MAX_CURRENT
                     msg = "Es darf um max 5A über den aktuell genutzten Strom geregelt werden."
             chargepoint.set_state_and_log(msg)
-            return max(current, chargepoint.data.set.charging_ev_data.ev_template.data.min_current)
+            return max(current, chargepoint.data.control_parameter.min_current)
 
-    def _add_unused_evse_current(self, limited_current, chargepoint: Chargepoint) -> float:
+    def _fix_deviating_evse_current(self, limited_current, chargepoint: Chargepoint) -> float:
         """Wenn Autos nicht die volle Ladeleistung nutzen, wird unnötig eingespeist. Dann kann um den noch nicht
-        genutzten Sollstrom hochgeregelt werden."""
+        genutzten Soll-Strom hochgeregelt werden. Wenn Fahrzeuge entgegen der Norm mehr Ladeleistung beziehen, als
+        freigegeben, wird entsprechend weniger freigegeben, da sonst uU die untere Grenze für die Abschaltschwelle
+        nicht erreicht wird."""
         evse_current = chargepoint.data.get.evse_current
         if evse_current:
             formatted_evse_current = evse_current if evse_current < 32 else evse_current / 100
-            current_with_offset = limited_current + max(formatted_evse_current - max(chargepoint.data.get.currents), 0)
+            current_with_offset = limited_current + formatted_evse_current - max(chargepoint.data.get.currents)
             current = min(current_with_offset, chargepoint.data.control_parameter.required_current)
             if current != limited_current:
-                log.debug(f"Ungenutzten Sollstrom aufschlagen ergibt {current}A.")
+                log.debug(f"Ungenutzten Soll-Strom aufschlagen ergibt {current}A.")
             return current
         else:
             return limited_current
@@ -127,13 +132,14 @@ class SurplusControlled:
             def phase_switch_necessary() -> bool:
                 return cp.cp_ev_chargemode_support_phase_switch() and cp.data.get.phases_in_use != 1
             control_parameter = cp.data.control_parameter
-            if cp.data.set.charging_ev_data.chargemode_changed:
+            if cp.data.set.charging_ev_data.chargemode_changed or cp.data.set.charging_ev_data.submode_changed:
                 if control_parameter.state == ChargepointState.CHARGING_ALLOWED:
                     if (cp.data.set.charging_ev_data.ev_template.data.prevent_charge_stop is False and
                             phase_switch_necessary() is False):
                         threshold = evu_counter.calc_switch_off_threshold(cp)[0]
                         if evu_counter.calc_raw_surplus() - cp.data.set.required_power < threshold:
                             control_parameter.required_currents = [0]*3
+                            control_parameter.state = ChargepointState.NO_CHARGING_ALLOWED
                 else:
                     control_parameter.required_currents = [0]*3
             else:
@@ -168,3 +174,17 @@ class SurplusControlled:
 
             control_parameter.required_currents = [max_current if required_currents[i] != 0 else 0 for i in range(3)]
             control_parameter.required_current = max_current
+
+
+def get_chargepoints_pv_charging() -> List[Chargepoint]:
+    chargepoints: List[Chargepoint] = []
+    for mode in CONSIDERED_CHARGE_MODES_PV:
+        chargepoints.extend(get_chargepoints_by_mode(mode))
+    return chargepoints
+
+
+def get_chargepoints_surplus_controlled() -> List[Chargepoint]:
+    chargepoints: List[Chargepoint] = []
+    for mode in CONSIDERED_CHARGE_MODES:
+        chargepoints.extend(get_chargepoints_by_mode(mode))
+    return chargepoints

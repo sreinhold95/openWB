@@ -2,8 +2,10 @@ from typing import List
 from unittest.mock import Mock
 import pytest
 
+from control import data
 from control.algorithm import surplus_controlled
-from control.algorithm.surplus_controlled import SurplusControlled
+from control.algorithm.surplus_controlled import SurplusControlled, get_chargepoints_pv_charging
+from control.chargemode import Chargemode
 from control.chargepoint.chargepoint import Chargepoint, ChargepointData
 from control.chargepoint.chargepoint_data import Get, Set
 from control.chargepoint.control_parameter import ControlParameter
@@ -70,8 +72,8 @@ def test_limit_adjust_current(new_current: float, expected_current: float, monke
 
 @pytest.mark.parametrize("phases, required_currents, expected_currents",
                          [
-                             pytest.param(1, [10, 0, 0], [32, 0, 0]),
-                             pytest.param(1, [0, 15, 0], [0, 32, 0]),
+                             pytest.param(1, [10, 0, 0], [16, 0, 0]),
+                             pytest.param(1, [0, 15, 0], [0, 16, 0]),
                              pytest.param(3, [10]*3, [16]*3),
                          ])
 def test_set_required_current_to_max(phases: int,
@@ -95,23 +97,56 @@ def test_set_required_current_to_max(phases: int,
 
 
 @pytest.mark.parametrize(
-    "evse_current, limited_current, expected_current",
+    "evse_current, limited_current, required_current, expected_current",
     [
-        pytest.param(None, 6, 6, id="Kein Sollstrom aus der EVSE ausgelesen"),
-        pytest.param(15, 15, 15, id="Auto lädt mit Sollstromstärke"),
-        pytest.param(15.5, 15.5, 16, id="Auto lädt mit weniger als Sollstromstärke"),
-        pytest.param(16, 16, 16,
-                     id="Auto lädt mit weniger als Sollstromstärke, aber EVSE-Begrenzung ist erreicht.")
+        pytest.param(None, 6, 16, 6, id="Kein Soll-Strom aus der EVSE ausgelesen"),
+        pytest.param(15, 15, 16, 15, id="Auto lädt mit Soll-Stromstärke"),
+        pytest.param(14.5, 14.5, 14.5, 14, id="Auto lädt mit mehr als Soll-Stromstärke"),
+        pytest.param(15.5, 15.5, 16, 16, id="Auto lädt mit weniger als Soll-Stromstärke"),
+        pytest.param(16, 16, 16, 16,
+                     id="Auto lädt mit weniger als Soll-Stromstärke, aber EVSE-Begrenzung ist erreicht.")
     ])
-def test_add_unused_evse_current(evse_current: float, limited_current: float, expected_current: float):
+def test_add_unused_evse_current(evse_current: float,
+                                 limited_current: float,
+                                 required_current: float,
+                                 expected_current: float):
     # setup
     c = Chargepoint(0, None)
     c.data.get.currents = [15]*3
     c.data.get.evse_current = evse_current
-    c.data.control_parameter.required_current = 16
+    c.data.control_parameter.required_current = required_current
 
     # execution
-    current = SurplusControlled()._add_unused_evse_current(limited_current, c)
+    current = SurplusControlled()._fix_deviating_evse_current(limited_current, c)
+
+    # assertion
+    assert current == expected_current
 
     # evaluation
     assert current == expected_current
+
+
+@pytest.mark.parametrize(
+    "submode_1, submode_2, expected_chargepoints",
+    [
+        pytest.param(Chargemode.PV_CHARGING, Chargemode.PV_CHARGING, [mock_cp1, mock_cp2]),
+        pytest.param(Chargemode.INSTANT_CHARGING, Chargemode.PV_CHARGING, [mock_cp2]),
+        pytest.param(Chargemode.INSTANT_CHARGING, Chargemode.INSTANT_CHARGING, []),
+    ])
+def test_get_chargepoints_submode_pv_charging(submode_1: Chargemode,
+                                              submode_2: Chargemode,
+                                              expected_chargepoints: List[Chargepoint]):
+    # setup
+    def setup_cp(cp: Chargepoint, submode: str) -> Chargepoint:
+        cp.data.set.charging_ev = Ev(0)
+        cp.data.control_parameter.chargemode = Chargemode.PV_CHARGING
+        cp.data.control_parameter.submode = submode
+        return cp
+    data.data.cp_data = {"cp1": setup_cp(mock_cp1, submode_1),
+                         "cp2": setup_cp(mock_cp2, submode_2)}
+
+    # evaluation
+    chargepoints = get_chargepoints_pv_charging()
+
+    # assertion
+    assert chargepoints == expected_chargepoints
