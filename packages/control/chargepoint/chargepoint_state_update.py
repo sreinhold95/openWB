@@ -1,7 +1,6 @@
 import copy
 import logging
-from threading import Thread
-import threading
+from threading import Thread, Event
 from typing import Dict
 
 from control.chargepoint.chargepoint import Chargepoint
@@ -14,13 +13,13 @@ log = logging.getLogger(__name__)
 class ChargepointStateUpdate:
     def __init__(self,
                  index: int,
-                 event_copy_data: threading.Event,
-                 event_global_data_initialized: threading.Event,
+                 event_copy_data: Event,
+                 event_global_data_initialized: Event,
                  cp_template_data: Dict,
                  ev_data: Dict,
                  ev_charge_template_data: Dict,
                  ev_template_data: Dict) -> None:
-        self.event_update_state = threading.Event()
+        self.event_update_state = Event()
         self.event_copy_data = event_copy_data
         self.event_global_data_initialized = event_global_data_initialized
         self.chargepoint: Chargepoint = Chargepoint(index, self.event_update_state)
@@ -44,7 +43,6 @@ class ChargepointStateUpdate:
                     cp = copy.deepcopy(self.chargepoint)
                 except TypeError:
                     cp = Chargepoint(self.chargepoint.num, None)
-                    cp.set_current_prev = copy.deepcopy(self.chargepoint.set_current_prev)
                     cp.data = copy.deepcopy(self.chargepoint.data)
                     cp.chargepoint_module = self.chargepoint.chargepoint_module
                 cp.template = copy.deepcopy(self.cp_template_data[f"cpt{self.chargepoint.data.config.template}"])

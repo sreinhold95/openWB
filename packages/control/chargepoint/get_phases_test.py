@@ -1,11 +1,11 @@
-import threading
+from threading import Event
 from unittest.mock import Mock
 from typing import Optional
 import pytest
 
 from control.chargepoint.chargepoint import Chargepoint
 from control.chargepoint.chargepoint_template import CpTemplate, get_chargepoint_template_default
-from control.ev import Ev
+from control.ev.ev import Ev
 from control.general import General
 from control import data
 
@@ -21,7 +21,7 @@ def cp() -> Chargepoint:
 
 @pytest.fixture(autouse=True)
 def general() -> None:
-    data.data_init(threading.Event())
+    data.data_init(Event())
     data.data.general_data = General()
 
 
@@ -35,7 +35,7 @@ class Params:
                  phases_in_use: int,
                  imported_since_plugged: float,
                  expected_phases: int,
-                 timestamp_perform_phase_switch: Optional[str] = None,
+                 timestamp_last_phase_switch: Optional[str] = None,
                  charge_state: bool = False) -> None:
         self.name = name
         self.connected_phases = connected_phases
@@ -45,7 +45,7 @@ class Params:
         self.phases_in_use = phases_in_use
         self.imported_since_plugged = imported_since_plugged
         self.expected_phases = expected_phases
-        self.timestamp_perform_phase_switch = timestamp_perform_phase_switch
+        self.timestamp_last_phase_switch = timestamp_last_phase_switch
         self.charge_state = charge_state
 
 
@@ -61,7 +61,7 @@ cases = [
            expected_phases=1, charge_state=True),
     Params("don't change during phase switch", connected_phases=3, auto_phase_switch_hw=True,
            prevent_phase_switch=False, chargemode_phases=0, phases_in_use=1, imported_since_plugged=0,
-           expected_phases=1, timestamp_perform_phase_switch="2022/05/11, 15:00:02"),
+           expected_phases=1, timestamp_last_phase_switch="2022/05/11, 15:00:02"),
     Params("auto phase during charge 3", connected_phases=3, auto_phase_switch_hw=True,
            prevent_phase_switch=False, chargemode_phases=0, phases_in_use=1, imported_since_plugged=0,
            expected_phases=1, charge_state=True),
@@ -81,11 +81,8 @@ cases = [
 
 
 @pytest.mark.parametrize("params", cases, ids=[c.name for c in cases])
-def test_get_phases_by_selected_chargemode(monkeypatch, cp: Chargepoint, params: Params):
+def test_get_phases_by_selected_chargemode(cp: Chargepoint, params: Params):
     # setup
-    mock_chargemode_phases = Mock(name="chargemode_phases", return_value=params.chargemode_phases)
-    monkeypatch.setattr(data.data.general_data, "get_phases_chargemode", mock_chargemode_phases)
-
     cp.data.config.connected_phases = params.connected_phases
     cp.data.config.auto_phase_switch_hw = params.auto_phase_switch_hw
     cp.data.get.charge_state = params.charge_state
@@ -94,11 +91,11 @@ def test_get_phases_by_selected_chargemode(monkeypatch, cp: Chargepoint, params:
     cp.data.set.log.imported_since_plugged = params.imported_since_plugged
     charging_ev_data = cp.data.set.charging_ev_data
     charging_ev_data.ev_template.data.prevent_phase_switch = params.prevent_phase_switch
-    cp.data.control_parameter.timestamp_perform_phase_switch = params.timestamp_perform_phase_switch
+    cp.data.control_parameter.timestamp_last_phase_switch = params.timestamp_last_phase_switch
     cp.data.control_parameter.phases = params.phases_in_use
 
     # execution
-    phases = cp.get_phases_by_selected_chargemode()
+    phases = cp.get_phases_by_selected_chargemode(params.chargemode_phases)
 
     # evaluation
     assert phases == params.expected_phases
@@ -134,36 +131,36 @@ class SetPhasesParams:
                  prevent_phase_switch: bool,
                  phases_in_use: int,
                  imported_since_plugged: float,
-                 phase_switch_suppported: bool,
+                 phase_switch_supported: bool,
                  expected_phases: int) -> None:
         self.name = name
         self.phases = phases
         self.prevent_phase_switch = prevent_phase_switch
         self.phases_in_use = phases_in_use
         self.imported_since_plugged = imported_since_plugged
-        self.phase_switch_suppported = phase_switch_suppported
+        self.phase_switch_supported = phase_switch_supported
         self.expected_phases = expected_phases
 
 
 cases_set_phases = [
     SetPhasesParams(name="Phases don't change", phases=1, phases_in_use=1, prevent_phase_switch=True,
-                    imported_since_plugged=0, phase_switch_suppported=True, expected_phases=1),
+                    imported_since_plugged=0, phase_switch_supported=True, expected_phases=1),
     SetPhasesParams(name="Charging didn't started yet", phases=1, phases_in_use=3, prevent_phase_switch=True,
-                    imported_since_plugged=0, phase_switch_suppported=True, expected_phases=1),
+                    imported_since_plugged=0, phase_switch_supported=True, expected_phases=1),
     SetPhasesParams(name="EV doesn't support phase wich", phases=1, phases_in_use=3, prevent_phase_switch=True,
-                    imported_since_plugged=1, phase_switch_suppported=True, expected_phases=3),
+                    imported_since_plugged=1, phase_switch_supported=True, expected_phases=3),
     SetPhasesParams(name="Switch phases", phases=1, phases_in_use=3, prevent_phase_switch=False,
-                    imported_since_plugged=1, phase_switch_suppported=True, expected_phases=1),
+                    imported_since_plugged=1, phase_switch_supported=True, expected_phases=1),
     SetPhasesParams(name="Phase switch not supported by cp", phases=1, phases_in_use=3, prevent_phase_switch=False,
-                    imported_since_plugged=1, phase_switch_suppported=False, expected_phases=1)
+                    imported_since_plugged=1, phase_switch_supported=False, expected_phases=3)
 ]
 
 
 @pytest.mark.parametrize("params", cases_set_phases, ids=[c.name for c in cases_set_phases])
 def test_set_phases(monkeypatch, cp: Chargepoint, params: SetPhasesParams):
     # setup
-    mock_phase_switch_suppported = Mock(name="phase_switch_suppported", return_value=params.phase_switch_suppported)
-    monkeypatch.setattr(Chargepoint, "cp_ev_support_phase_switch", mock_phase_switch_suppported)
+    mock_phase_switch_supported = Mock(name="phase_switch_supported", return_value=params.phase_switch_supported)
+    monkeypatch.setattr(Chargepoint, "hw_supports_phase_switch", mock_phase_switch_supported)
     cp.data.get.phases_in_use = params.phases_in_use
     cp.data.set.log.imported_since_plugged = params.imported_since_plugged
     charging_ev_data = cp.data.set.charging_ev_data
@@ -171,7 +168,7 @@ def test_set_phases(monkeypatch, cp: Chargepoint, params: SetPhasesParams):
     cp.data.control_parameter.phases = params.phases_in_use
 
     # execution
-    phases = cp.set_phases(params.phases)
+    phases = cp.set_phases(params.phases, 3)
 
     # evaluation
     assert phases == params.expected_phases

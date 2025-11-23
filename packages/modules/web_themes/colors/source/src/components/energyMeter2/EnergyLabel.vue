@@ -9,7 +9,7 @@
 			:fill="item.color"
 			:class="item.icon.length <= 2 ? 'fas' : ''"
 		>
-			{{ props.item.icon }}
+			{{ trimName(props.item.icon) }}
 		</text>
 		<!-- Energy -->
 		<text
@@ -21,7 +21,7 @@
 		>
 			{{
 				formatWattH(
-					item.energy,
+					item[graphData.graphScope].energy,
 					globalConfig.decimalPlaces,
 					//graphData.graphMode == 'year',
 					false,
@@ -47,6 +47,7 @@ import * as d3 from 'd3'
 import type { MarginType, PowerItem } from '@/assets/js/types'
 import { globalConfig } from '@/assets/js/themeConfig'
 import { formatWattH } from '@/assets/js/helpers'
+import { graphData } from '../powerGraph/model'
 
 const props = defineProps<{
 	id: string
@@ -73,6 +74,11 @@ function autString(): string {
 	} else {
 		return ''
 	}
+}
+
+function trimName(name: string) {
+	const maxlen = 14
+	return name.length > maxlen ? name.slice(0, maxlen - 1) + '...' : name
 }
 </script>
 

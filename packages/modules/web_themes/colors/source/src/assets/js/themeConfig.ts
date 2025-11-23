@@ -8,12 +8,13 @@ import { computed, reactive } from 'vue'
 import { select } from 'd3'
 import { ChargeMode, type ChargeModeInfo } from './types'
 import { addShDevice, shDevices } from '@/components/smartHome/model'
-import { sourceSummary } from './model'
+import { registry } from './model'
 import {
 	sourceGraphIsNotInitialized,
 	usageGraphIsNotInitialized,
 } from '@/components/powerGraph/model'
 import { updateServer } from './sendMessages'
+import { counters } from '@/components/counterList/model'
 export class Config {
 	private _showRelativeArcs = false
 	showTodayGraph = true
@@ -38,11 +39,11 @@ export class Config {
 	private _showPrices = false
 	private _showInverters = false
 	private _alternativeEnergy = false
+	private _sslPrefs: boolean = false
 	private _debug: boolean = false
 	private _lowerPriceBound = 0
 	private _upperPriceBound = 0
-	isEtEnabled: boolean = false
-	etPrice: number = 20.5
+	private _showPmLabels = true
 	showRightButton = true
 	showLeftButton = true
 	// graphMode = ''
@@ -50,6 +51,7 @@ export class Config {
 	animationDelay = 100
 	zoomGraph = false
 	zoomedWidget = 1
+	countersToShow: number[] = []
 	constructor() {}
 	get showRelativeArcs() {
 		return this._showRelativeArcs
@@ -203,6 +205,16 @@ export class Config {
 	setShowClock(mode: string) {
 		this._showClock = mode
 	}
+	get sslPrefs() {
+		return this._sslPrefs
+	}
+	set sslPrefs(on: boolean) {
+		this._sslPrefs = on
+		savePrefs()
+	}
+	setSslPrefs(on: boolean) {
+		this._sslPrefs = on
+	}
 	get debug() {
 		return this._debug
 	}
@@ -307,6 +319,16 @@ export class Config {
 	setUpperPriceBound(val: number) {
 		this._upperPriceBound = val
 	}
+	get showPmLabels() {
+		return this._showPmLabels
+	}
+	set showPmLabels(val: boolean) {
+		this._showPmLabels = val
+		savePrefs()
+	}
+	setShowPmLabels(val: boolean) {
+		this._showPmLabels = val
+	}
 }
 
 export const globalConfig = reactive(new Config())
@@ -351,7 +373,7 @@ export const chargemodes: { [key: string]: ChargeModeInfo } = {
 	pv_charging: {
 		mode: ChargeMode.pv_charging,
 		name: 'PV',
-		color: 'var(--color-pv',
+		color: 'var(--color-pv)',
 		icon: 'fa-solar-panel',
 	},
 	scheduled_charging: {
@@ -360,11 +382,11 @@ export const chargemodes: { [key: string]: ChargeModeInfo } = {
 		color: 'var(--color-battery)',
 		icon: 'fa-bullseye',
 	},
-	standby: {
-		mode: ChargeMode.standby,
-		name: 'Standby',
-		color: 'var(--color-axis',
-		icon: 'fa-pause',
+	eco_charging: {
+		mode: ChargeMode.eco_charging,
+		name: 'Eco',
+		color: 'var(--color-devices)',
+		icon: 'fa-coins',
 	},
 	stop: {
 		mode: ChargeMode.stop,
@@ -385,6 +407,7 @@ export class GlobalData {
 	cpDailyExported = 0
 	evuId = 0
 	etProvider = ''
+	country = 'de'
 	get pvBatteryPriority() {
 		return this._pvBatteryPriority
 	}
@@ -420,9 +443,9 @@ export function toggleFixArcs() {
 }
 export function resetArcs() {
 	globalConfig.maxPower =
-		sourceSummary.evuIn.power +
-		sourceSummary.pv.power +
-		sourceSummary.batOut.power
+		registry.getPower('evuIn') +
+		registry.getPower('pv') +
+		registry.getPower('batOut')
 	savePrefs()
 }
 export function switchDecimalPlaces() {
@@ -457,7 +480,8 @@ export const infotext: { [key: string]: string } = {
 		'Ladepriorität bei PV-Produktion. Bevorzung von Fahzeugen, Speicher, oder Fahrzeugen bis zum eingestellten Mindest-Ladestand. Die Einstellung ist für alle Ladepunkte gleich.',
 }
 interface Preferences {
-	hideSH?: number[]
+	hideSH?: string[]
+	showCtr?: string[]
 	showLG?: boolean
 	displayM?: string
 	stackO?: number
@@ -482,6 +506,8 @@ interface Preferences {
 	altEngy?: boolean
 	lowerP?: number
 	upperP?: number
+	sslPrefs?: boolean
+	pmLabels?: boolean
 	debug?: boolean
 }
 
@@ -490,6 +516,9 @@ function writeCookie() {
 	prefs.hideSH = [...shDevices.values()]
 		.filter((device) => !device.showInGraph)
 		.map((device) => device.id)
+	prefs.showCtr = [...counters.values()]
+		.filter((ctr) => ctr.showInGraph)
+		.map((ctr) => ctr.id.toString())
 	prefs.showLG = globalConfig.graphPreference == 'live'
 	prefs.displayM = globalConfig.displayMode
 	prefs.stackO = globalConfig.usageStackOrder
@@ -514,12 +543,15 @@ function writeCookie() {
 	prefs.altEngy = globalConfig.alternativeEnergy
 	prefs.lowerP = globalConfig.lowerPriceBound
 	prefs.upperP = globalConfig.upperPriceBound
+	prefs.sslPrefs = globalConfig.sslPrefs
+	prefs.pmLabels = globalConfig.showPmLabels
 	prefs.debug = globalConfig.debug
 
 	document.cookie =
 		'openWBColorTheme=' +
 		JSON.stringify(prefs) +
-		';max-age=16000000;samesite=strict'
+		';max-age=16000000;' +
+		(globalConfig.sslPrefs ? 'SameSite=None;Secure' : 'SameSite=Strict')
 }
 
 function readCookie() {
@@ -542,6 +574,9 @@ function readCookie() {
 				}
 				shDevices.get(i)!.setShowInGraph(false)
 			})
+		}
+		if (prefs.showCtr !== undefined) {
+			globalConfig.countersToShow = prefs.showCtr.map((i) => +i)
 		}
 		if (prefs.showLG !== undefined) {
 			globalConfig.setGraphPreference(prefs.showLG ? 'live' : 'today')
@@ -608,6 +643,12 @@ function readCookie() {
 		}
 		if (prefs.upperP !== undefined) {
 			globalConfig.setUpperPriceBound(prefs.upperP)
+		}
+		if (prefs.sslPrefs !== undefined) {
+			globalConfig.setSslPrefs(prefs.sslPrefs)
+		}
+		if (prefs.pmLabels !== undefined) {
+			globalConfig.setShowPmLabels(prefs.pmLabels)
 		}
 		if (prefs.debug !== undefined) {
 			globalConfig.setDebug(prefs.debug)
