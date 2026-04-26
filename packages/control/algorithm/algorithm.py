@@ -29,6 +29,8 @@ class Algorithm:
             self._check_auto_phase_switch_delay()
             self.surplus_controlled.check_submode_pv_charging()
             common.reset_current()
+            for cp in data.data.cp_data.values():
+                cp.reset_values_before_algorithm()
             log.info("**Mindestrom setzen**")
             self.min_current.set_min_current()
             log.info("**Soll-Strom setzen**")
@@ -60,7 +62,7 @@ class Algorithm:
                 if cp.data.control_parameter.required_current != 0:
                     charging_ev = cp.data.set.charging_ev_data
                     control_parameter = cp.data.control_parameter
-                    if cp.cp_state_hw_support_phase_switch() and control_parameter.template_phases == 0:
+                    if control_parameter.template_phases == 0 and cp.cp_state_hw_support_phase_switch():
                         # Gibt die Stromstärke und Phasen zurück, mit denen nach der Umschaltung geladen werden
                         # soll. Falls keine Umschaltung erforderlich ist, werden Strom und Phasen, die übergeben
                         # wurden, wieder zurückgegeben.

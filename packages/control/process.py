@@ -12,10 +12,11 @@ from control.chargepoint.chargepoint_state import ChargepointState
 from helpermodules.pub import Pub
 from helpermodules.utils._thread_handler import joined_thread_handler
 from modules.common.abstract_io import AbstractIoDevice
+from modules.common.configurable_device import set_power_limit_wrapper
 from modules.common.fault_state_level import FaultStateLevel
-from modules.io_actions.controllable_consumers.dimming.api import Dimming
+from modules.io_actions.controllable_consumers.dimming.api_io import DimmingIo
 from modules.io_actions.controllable_consumers.dimming_direct_control.api import DimmingDirectControl
-from modules.io_actions.generator_systems.stepwise_control.api import StepwiseControl
+from modules.io_actions.generator_systems.stepwise_control.api_io import StepwiseControlIo
 
 log = logging.getLogger(__name__)
 
@@ -39,15 +40,12 @@ class Process:
                         cp.initiate_phase_switch()
                         if control_parameter.state == ChargepointState.NO_CHARGING_ALLOWED and cp.data.set.current != 0:
                             control_parameter.state = ChargepointState.WAIT_FOR_USING_PHASES
-                        self._update_state(cp)
                         cp.set_timestamp_charge_start()
+                        self._update_state(cp)
                     else:
-                        # LP, an denen nicht geladen werden darf
-                        chargelog.save_interim_data(
-                            cp, data.data.ev_data
-                            ["ev" + str(cp.data.config.ev)],
-                            immediately=False)
                         control_parameter.state = ChargepointState.NO_CHARGING_ALLOWED
+                        cp.data.set.current = 0
+
                     if cp.data.get.state_str is not None:
                         Pub().pub("openWB/set/chargepoint/"+str(cp.num)+"/get/state_str",
                                   cp.data.get.state_str)
@@ -64,31 +62,33 @@ class Process:
                     cp.remember_previous_values()
                 except Exception:
                     log.exception("Fehler im Process-Modul für Ladepunkt "+str(cp))
-            for bat_component in get_controllable_bat_components():
-                modules_threads.append(
-                    Thread(
-                        target=bat_component.set_power_limit,
-                        args=(data.data.bat_data[f"bat{bat_component.component_config.id}"].data.set.power_limit,),
-                        name=f"set power limit {bat_component.component_config.id}"))
+            if data.data.bat_all_data.data.set.set_limit:
+                for bat_component in get_controllable_bat_components():
+                    modules_threads.append(
+                        Thread(
+                            target=set_power_limit_wrapper,
+                            args=(bat_component,
+                                  data.data.bat_data[f"bat{bat_component.component_config.id}"].data.set.power_limit),
+                            name=f"set power limit {bat_component.component_config.id}"))
             for action in data.data.io_actions.actions.values():
                 if isinstance(action, DimmingDirectControl):
                     for d in action.config.configuration.devices:
                         if d["type"] == "io":
                             data.data.io_states[f"io_states{d['id']}"].data.set.digital_output[d["digital_output"]] = (
-                                action.dimming_via_direct_control() is None  # active output (True) if no dimming
+                                action.dimming_via_direct_control()[0] is None  # active output (True) if no dimming
                             )
-                if isinstance(action, Dimming):
+                if isinstance(action, DimmingIo):
                     for d in action.config.configuration.devices:
                         if d["type"] == "io":
                             data.data.io_states[f"io_states{d['id']}"].data.set.digital_output[d["digital_output"]] = (
                                 not action.dimming_active()  # active output (True) if no dimming
                             )
-                if isinstance(action, StepwiseControl):
+                if isinstance(action, StepwiseControlIo):
                     # check if passthrough is enabled
                     if action.config.configuration.passthrough_enabled:
                         # find output pattern by value
                         for pattern in action.config.configuration.output_pattern:
-                            if pattern["value"] == action.control_stepwise():
+                            if pattern["value"] == action.control_stepwise()[0]:
                                 # set digital outputs according to matching output_pattern
                                 for output in pattern["matrix"].keys():
                                     data.data.io_states[
@@ -99,7 +99,8 @@ class Process:
                     modules_threads.append(
                         Thread(
                             target=io.write,
-                            args=(None, data.data.io_states[f"io_states{io.config.id}"].data.set.digital_output,),
+                            args=(data.data.io_states[f"io_states{io.config.id}"].data.set.analog_output,
+                                  data.data.io_states[f"io_states{io.config.id}"].data.set.digital_output,),
                             name=f"set output io{io.config.id}"))
             if modules_threads:
                 joined_thread_handler(modules_threads, 3)
@@ -138,9 +139,9 @@ class Process:
             current = 0
 
         chargepoint.data.set.current = current
-        Pub().pub("openWB/set/chargepoint/"+str(chargepoint.num)+"/set/current", current)
-        log.info(f"LP{chargepoint.num}: set current {current} A, "
-                 f"state {ChargepointState(chargepoint.data.control_parameter.state).name}")
+        if chargepoint.data.get.plug_state:
+            log.info(f"LP{chargepoint.num}: set current {current} A, "
+                     f"state {ChargepointState(chargepoint.data.control_parameter.state).name}")
 
     def _start_charging(self, chargepoint: chargepoint.Chargepoint) -> Thread:
         return Thread(target=chargepoint.chargepoint_module.set_current,

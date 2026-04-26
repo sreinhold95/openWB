@@ -1,11 +1,20 @@
 from dataclasses import dataclass, field
 import logging
-from typing import List
+from typing import List, Optional
 
 from dataclass_utils.factories import currents_list_factory
 from helpermodules.constants import NO_ERROR
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Config:
+    max_power: float = 0
+
+
+def config_factory() -> Config:
+    return Config()
 
 
 @dataclass
@@ -21,6 +30,9 @@ class Get:
     fault_str: str = field(default=NO_ERROR, metadata={"topic": "get/fault_str"})
     power: float = field(default=0, metadata={"topic": "get/power"})
     power_limit_controllable: bool = field(default=False, metadata={"topic": "get/power_limit_controllable"})
+    max_charge_power: float = field(default=0, metadata={"topic": "get/max_charge_power"})
+    max_discharge_power: float = field(default=0, metadata={"topic": "get/max_discharge_power"})
+    state_str: str = field(default="Keine Steuerung", metadata={"topic": "get/state_str"})
 
 
 def get_factory() -> Get:
@@ -29,7 +41,7 @@ def get_factory() -> Get:
 
 @dataclass
 class Set:
-    power_limit: float = field(default=None, metadata={"topic": "set/power_limit"})
+    power_limit: Optional[int] = field(default=None, metadata={"topic": "set/power_limit"})
 
 
 def set_factory() -> Set:
@@ -38,6 +50,7 @@ def set_factory() -> Set:
 
 @dataclass
 class BatData:
+    config: Config = field(default_factory=config_factory)
     get: Get = field(default_factory=get_factory)
     set: Set = field(default_factory=set_factory)
 

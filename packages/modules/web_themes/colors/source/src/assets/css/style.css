@@ -125,9 +125,7 @@ html {
 .largeTextSize {
 	font-size: var(--font-large);
 }
-.buttonTextSize {
-	font-size: var(--font-large);
-}
+
 h3 {
 	font-size: var(--font-large);
 	color: var(--color-title);
@@ -193,7 +191,7 @@ body>.container-fluid {
 	/* --color-counters: #cab2d6; */
 	/* --color-counters: #a00dd8; */
 	--color-counters: chocolate;
-
+	--color-eco: #f16913;
 	--color-ctr1: chocolate;
 	--color-ctr2: peru;
 	--color-ctr3: sienna;
@@ -226,6 +224,7 @@ body>.container-fluid {
 	--color-fg: black;
 	--color-scale: lightgrey;
 	--color-title: rgba(0, 0, 0, 0.644);
+	--color-config: lightgrey;
 	--padding-widget: 5px;
 	--fontCol: rgba(255, 255, 255, 0.82);
 	--gridCol: rgba(255, 255, 255, 0.82);
@@ -244,6 +243,7 @@ body>.container-fluid {
 	--color-fg: white;
 	--color-scale: steelblue;
 	--color-title: lightgrey;
+	--color-config: steelblue;
 	--padding-widget: 0px;
 }
 
@@ -258,6 +258,7 @@ body>.container-fluid {
 	--color-fg: white;
 	--color-scale: #999999;
 	--color-title: lightgrey;
+	--color-config: #666666;
 	--padding-widget: 0px;
 }
 
@@ -415,7 +416,7 @@ swiper-slide {
 option {
 	color: blue;
 }
-.ttarea .ttmessage {visibility: hidden}
+.ttarea .ttmessage {visibility: hidden;}
 .ttarea:hover  .ttmessage {
     visibility: visible;
 }

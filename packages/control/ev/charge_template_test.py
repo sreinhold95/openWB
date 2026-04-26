@@ -195,8 +195,7 @@ def test_calculate_duration(selected: str,
     "end_time_mock, expected_plan_num",
     [
         pytest.param([1000, 1500, 2000], 0, id="nächster Zieltermin Plan 0"),
-        pytest.param([-100, 1000, 2000], 1, id="Plan 0 abgelaufen, Plan 1 innerhalb der nächsten 12h"),
-        pytest.param([-100, 45000, 50000], 0, id="Plan 0 abgelaufen, Plan 1 nicht innerhalb der nächsten 12h"),
+        pytest.param([-100, 45000, 50000], 0, id="Plan 0 abgelaufen, nächster Tag"),
         pytest.param([1500, 2000, 1000], 2, id="nächster Zieltermin Plan 2"),
         pytest.param([None]*3, 0, id="kein Plan"),
     ])
@@ -217,7 +216,7 @@ def test_scheduled_charging_recent_plan(end_time_mock,
 
     # execution
     selected_plan = ct._find_recent_plan(
-        plans, 60, EvTemplate(), 200, 3, True, ChargingType.AC.value, 1652688000, control_parameter, 0, False)
+        plans, 60, EvTemplate(), 200, 3, True, ChargingType.AC.value, control_parameter, 0, False)
 
     # evaluation
     if selected_plan:
@@ -255,8 +254,8 @@ def test_scheduled_charging_recent_plan(end_time_mock,
                      False, (16, "instant_charging",
                      ChargeTemplate.SCHEDULED_CHARGING_MAX_CURRENT.format(16), 3),
                      id="few minutes too late, but didn't miss for today"),
-        pytest.param(SelectedPlan(remaining_time=301, duration=3600), 79, 0, "soc",
-                     False, (6, "pv_charging", ChargeTemplate.SCHEDULED_CHARGING_USE_PV.format("um 8:45 Uhr"), 0),
+        pytest.param(SelectedPlan(remaining_time=601, duration=3600), 79, 0, "soc",
+                     False, (6, "pv_charging", ChargeTemplate.SCHEDULED_CHARGING_USE_PV.format("um 8:50 Uhr"), 0),
                      id="too early, use pv"),
     ])
 def test_scheduled_charging_calc_current(plan_data: SelectedPlan,
@@ -276,8 +275,8 @@ def test_scheduled_charging_calc_current(plan_data: SelectedPlan,
         plan_data.plan = plan
 
     # execution
-    ret = ct.scheduled_charging_calc_current(plan_data, soc, used_amount, 3, 6,
-                                             0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE)
+    ret = ct.scheduled_charging_calc_current(plan_data, soc, used_amount, 3, 3, 6,
+                                             0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE, True)
 
     # evaluation
     assert ret == expected
@@ -289,10 +288,43 @@ def test_scheduled_charging_calc_current_no_plans():
 
     # execution
     ret = ct.scheduled_charging_calc_current(
-        None, 63, 5, 3, 6, 0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE)
+        None, 63, 5, 3, 3, 6, 0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE, True)
 
     # evaluation
     assert ret == (0, "stop", ChargeTemplate.SCHEDULED_CHARGING_NO_PLANS_CONFIGURED, 3)
+
+
+@pytest.mark.parametrize(
+    "selected_limit, charge_state, expected",
+    [
+        pytest.param("soc", False,
+                     (6, "pv_charging", ChargeTemplate.SCHEDULED_CHARGING_USE_PV.format("um 8:50 Uhr"), 0),
+                     id="soc request interval not considered, use pv"),
+        pytest.param("soc", True,
+                     (14, "instant_charging",
+                      ChargeTemplate.SCHEDULED_CHARGING_IN_TIME.format(14, 'einen SoC von 80%', "07:00"), 3),
+                     id="soc request interval considered"),
+        pytest.param("amount", True,
+                     (6, "pv_charging", ChargeTemplate.SCHEDULED_CHARGING_USE_PV.format("um 8:50 Uhr"), 0),
+                     id="amount, charging, soc request interval not considered, no soc limit configured"),
+        pytest.param("amount", False,
+                     (6, "pv_charging", ChargeTemplate.SCHEDULED_CHARGING_USE_PV.format("um 8:50 Uhr"), 0),
+                     id="amount, not charging, soc request interval not considered, no soc limit configured"),
+    ])
+def test_scheduled_charging_calc_current_consider_soc_request_interval_offset(
+        selected_limit: str, charge_state: bool, expected: Tuple[float, str, str, int]):
+    # setup
+    ct = ChargeTemplate()
+    plan = ScheduledChargingPlan()
+    plan.limit.selected = selected_limit
+
+    # execution
+    ret = ct.scheduled_charging_calc_current(
+        SelectedPlan(plan=plan, remaining_time=601, phases=3, duration=3600),
+        79, 0, 3, 3, 6, 800, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE, charge_state)
+
+    # evaluation
+    assert ret == expected
 
 
 LOADING_HOURS_TODAY = [datetime.datetime(
@@ -383,8 +415,8 @@ def test_scheduled_charging_calc_current_electricity_tariff(
 
     # execution
     ret = ct.scheduled_charging_calc_current(
-        SelectedPlan(plan=plan, remaining_time=301, phases=3, duration=3600),
-        current_soc, 0, 3, 6, 0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE)
+        SelectedPlan(plan=plan, remaining_time=601, phases=3, duration=3600),
+        current_soc, 0, 3, 3, 6, 0, ChargingType.AC.value, EvTemplate(), BidiState.BIDI_CAPABLE, True)
 
     # evaluation
     assert ret == expected

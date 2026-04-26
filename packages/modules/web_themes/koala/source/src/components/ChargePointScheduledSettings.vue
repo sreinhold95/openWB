@@ -9,17 +9,13 @@
       @click="addScheduledChargingPlan"
     />
   </div>
-  <div
+    <BaseMessage
     v-if="plans.length === 0"
-    class="row q-mt-sm q-pa-sm bg-primary text-white no-wrap message-text"
-    color="primary"
-    style="border-radius: 10px"
-  >
-    <q-icon name="info" size="sm" class="q-mr-xs" />
-    Keine Ladeziele festgelegt.
-  </div>
+    message="Keine Zeitpläne vorhanden."
+    type="info"
+  />
   <div v-else>
-    <div v-for="(plan, index) in plans" :key="index" class="row q-mt-sm">
+    <div v-for="plan in plans" :key="plan.id" class="row q-mt-sm">
       <ChargePointScheduledPlanButton
         class="full-width"
         :charge-point-id="props.chargePointId"
@@ -43,33 +39,40 @@
 </template>
 
 <script setup lang="ts">
+import { ref, computed } from 'vue';
 import { useMqttStore } from 'src/stores/mqtt-store';
 import ChargePointScheduledPlanButton from './ChargePointScheduledPlanButton.vue';
 import ChargePointScheduledPlanDetails from './ChargePointScheduledPlanDetails.vue';
-import { computed, ref } from 'vue';
+import BaseMessage from './BaseMessage.vue';
 import { Screen } from 'quasar';
 
 const props = defineProps<{
   chargePointId: number;
 }>();
 
-const isSmallScreen = computed(() => Screen.lt.sm);
-
-const currentPlanDetailsVisible = ref<boolean>(false);
-const selectedPlan = ref(null);
-
 const mqttStore = useMqttStore();
+
+const isSmallScreen = computed(() => Screen.lt.sm);
 
 const plans = computed(() =>
   mqttStore.vehicleScheduledChargingPlans(props.chargePointId),
 );
 
-const addScheduledChargingPlan = () => {
-  mqttStore.addScheduledChargingPlanForChargePoint(props.chargePointId);
-};
+const selectedPlanId = ref<number | null>(null);
+
+const selectedPlan = computed(() => {
+  if (selectedPlanId.value === null) return null;
+  return plans.value.find((plan) => plan.id === selectedPlanId.value);
+});
+
+const currentPlanDetailsVisible = ref(false);
 
 const openPlanDialog = (plan) => {
-  selectedPlan.value = plan;
+  selectedPlanId.value = plan.id;
   currentPlanDetailsVisible.value = true;
+};
+
+const addScheduledChargingPlan = () => {
+  mqttStore.addScheduledChargingPlanForChargePoint(props.chargePointId);
 };
 </script>

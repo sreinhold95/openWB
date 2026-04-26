@@ -66,6 +66,7 @@ class BatState:
         power: float = 0,
         soc: float = 0,
         currents: Optional[List[float]] = None,
+        serial_number: Optional[str] = None,
     ):
         """Args:
             imported: total imported energy in Wh
@@ -83,6 +84,7 @@ class BatState:
             if not check_currents_power_sign(currents, power):
                 log.debug("currents sign wrong "+str(currents))
         self.currents = currents
+        self.serial_number = serial_number
 
 
 @auto_str
@@ -97,7 +99,7 @@ class CounterState:
         powers: Optional[List[Optional[float]]] = None,
         power_factors: Optional[List[Optional[float]]] = None,
         frequency: float = 50,
-        serial_number: str = "",
+        serial_number: Optional[str] = None,
     ):
         """Args:
             imported: total imported energy in Wh
@@ -128,7 +130,8 @@ class InverterState:
         power: float,
         imported: float = 0,  # simulated import counter to properly calculate PV energy when bat is charged from AC
         currents: Optional[List[Optional[float]]] = None,
-        dc_power: Optional[float] = None
+        dc_power: Optional[float] = None,
+        serial_number: Optional[str] = None,
     ):
         """Args:
             exported: total energy in Wh
@@ -147,15 +150,20 @@ class InverterState:
         self.exported = exported
         self.imported = imported
         self.dc_power = dc_power
+        self.serial_number = serial_number
 
 
 @auto_str
 class CarState:
-    def __init__(self, soc: float, range: Optional[float] = None, soc_timestamp: Optional[float] = None):
+    def __init__(self, soc: float,
+                 range: Optional[float] = None,
+                 soc_timestamp: Optional[float] = None,
+                 odometer: Optional[float] = None):
         """Args:
             soc: actual state of charge in percent
             range: actual range in km
             soc_timestamp: timestamp of last request as unix timestamp
+            odometer: actual odometer of vehicle in km
         """
         self.soc = soc
         self.range = range
@@ -166,6 +174,7 @@ class CarState:
                 log.debug(f'Zeitstempel {soc_timestamp} ist in ms, wird in s gewandelt. Modul sollte angepasst werden.')
                 soc_timestamp /= 1000
             self.soc_timestamp = soc_timestamp
+        self.odometer = odometer
 
 
 @auto_str

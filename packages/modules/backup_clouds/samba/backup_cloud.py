@@ -28,32 +28,155 @@ def is_port_open(host: str, port: int):
         s.close()
 
 
-def upload_backup(config: SambaBackupCloudConfiguration, backup_filename: str, backup_file: bytes) -> None:
-    conn = SMBConnection(config.smb_user, config.smb_password, os.uname()[1], config.smb_server, use_ntlm_v2=True)
-    found_invalid_chars = re.search(r'[\\\:\*\?\"\<\>\|]+', config.smb_path)
-    host_is_reachable = is_port_open(config.smb_server, 139)
+def _enforce_retention(conn, config: SambaBackupCloudConfiguration, backup_filename: str) -> None:
+    """
+    Löscht alte Backups auf dem SMB-Share, wenn mehr als max_backups vorhanden sind.
+    Es werden nur Dateien berücksichtigt, die auf ".openwb-backup" bzw.
+    ".openwb-backup.gpg" enden (stabiler Filter; der Teil vor der Endung ist
+    timestamps-/versionspezifisch und darf nicht zum Gruppieren verwendet werden).
+    """
+    max_backups = config.max_backups
+    if not max_backups or max_backups <= 0:
+        return
 
-    if found_invalid_chars:
-        log.warning("Folgenden ungültige Zeichen im Pfad gefunden: {}".format(found_invalid_chars.group()))
-        log.warning("Sicherung nicht erfolgreich.")
-        send_file = False
+    # Verzeichnis ermitteln, in dem die Backups liegen
+    smb_path = config.smb_path or "/"
+    smb_path = smb_path.rstrip("/")
+    if smb_path == "":
+        dir_path = "/"
     else:
-        send_file = True
+        dir_path = smb_path
 
-    if host_is_reachable and conn.connect(config.smb_server, 139) and send_file:
-        log.info("SMB Verbindungsaufbau erfolgreich.")
-        full_file_path = config.smb_path + backup_filename if config.smb_path is not None else backup_filename
-        log.info("Backup nach //" + config.smb_server + '/' + config.smb_share + '/' + full_file_path)
+    base_name = os.path.basename(backup_filename)
+    if base_name.endswith(".openwb-backup.gpg"):
+        required_suffix = ".openwb-backup.gpg"
+    elif base_name.endswith(".openwb-backup"):
+        required_suffix = ".openwb-backup"
+    else:
+        # Wenn das Dateimuster nicht passt, vermeiden wir versehentliches
+        # Löschen fremder Dateien auf dem Share.
+        log.warning("Samba Retention: Unerwartetes Backup-Dateimuster: %s", base_name)
+        return []
+
+    # Alle Einträge im Backup-Verzeichnis holen
+    entries = conn.listPath(config.smb_share, dir_path)
+
+    # Nur relevante Backup-Dateien herausfiltern
+    backup_files = [
+        e for e in entries
+        if not e.isDirectory
+        and e.filename not in (".", "..")
+        and e.filename.endswith(required_suffix)
+    ]
+
+    if len(backup_files) <= max_backups:
+        return
+
+    # Nach Dateiname sortieren (Issue #2020: Dateiname enthält die Reihenfolge)
+    backup_files.sort(key=lambda e: e.filename)
+
+    # Ältere Backups über dem Limit löschen (alles bis auf die letzten max_backups)
+    for old_entry in backup_files[:-max_backups]:
+        if dir_path in ("", "/"):
+            delete_path = f"/{old_entry.filename}"
+        else:
+            delete_path = f"{dir_path.rstrip('/')}/{old_entry.filename}"
         try:
-            conn.storeFile(config.smb_share, full_file_path, io.BytesIO(backup_file))
+            log.info("Lösche altes Samba-Backup: //%s/%s%s", config.smb_server, config.smb_share, delete_path)
+            conn.deleteFiles(config.smb_share, delete_path)
         except Exception as error:
-            log.error(error.__str__().split('\n')[0])
-            log.error("Möglicherweise ist die Freigabe oder ein Unterordner nicht vorhanden.")
-        conn.close()
-    elif send_file:
-        log.warning("SMB Verbindungsaufbau fehlgeschlagen.")
-    elif not host_is_reachable:
-        log.warning("Host {} und/oder Port 139 nicht zu erreichen.".format(config.smb_server))
+            # Fehler beim Aufräumen sollen das eigentliche Backup nicht fehlschlagen lassen
+            log.error("Fehler beim Löschen alter Samba-Backups (%s): %s", delete_path, str(error).split("\n")[0])
+
+
+def upload_backup(config: SambaBackupCloudConfiguration, backup_filename: str, backup_file: bytes) -> None:
+    SMB_PORT_445 = 445
+    SMB_PORT_139 = 139
+
+    # Pfad prüfen
+    if re.search(r'[\\\:\*\?\"\<\>\|]+', config.smb_path):
+        raise Exception("Ungültige Zeichen im Pfad. Sicherung nicht erfolgreich.")
+
+    # ------------------------------------------------------------
+    # 1) SMB2/3 über Port 445 testen
+    # ------------------------------------------------------------
+    if is_port_open(config.smb_server, SMB_PORT_445):
+        conn = SMBConnection(
+            config.smb_user,
+            config.smb_password,
+            os.uname()[1],
+            config.smb_server,
+            use_ntlm_v2=True,
+            is_direct_tcp=True
+        )
+
+        if conn.connect(config.smb_server, SMB_PORT_445):
+            try:
+                log.info("SMB-Verbindung über Port 445 erfolgreich.")
+                full_file_path = f"{config.smb_path.rstrip('/')}/{backup_filename}"
+                log.info(f"Backup nach //{config.smb_server}/{config.smb_share}/{full_file_path}")
+
+                conn.storeFile(config.smb_share, full_file_path, io.BytesIO(backup_file))
+
+                try:
+                    _enforce_retention(conn, config, backup_filename)
+                except Exception as error:
+                    log.error(
+                        "Fehler bei der Bereinigung alter Samba-Backups (Port 445): %s",
+                        str(error).split("\n")[0],
+                    )
+
+                return
+            except Exception as error:
+                raise Exception(
+                    "Freigabe oder Unterordner existiert möglicherweise nicht. " + str(error).split("\n")[0]
+                )
+            finally:
+                conn.close()
+        else:
+            raise Exception("SMB-Verbindungsaufbau über Port 445 nicht möglich.")
+
+    # ------------------------------------------------------------
+    # 2) Fallback: SMB1 über Port 139
+    # ------------------------------------------------------------
+    if not is_port_open(config.smb_server, SMB_PORT_139):
+        raise Exception(
+            f"Host {config.smb_server} und/oder Port {SMB_PORT_139} und {SMB_PORT_445} nicht erreichbar."
+        )
+
+    conn = SMBConnection(
+        config.smb_user,
+        config.smb_password,
+        os.uname()[1],
+        config.smb_server,
+        use_ntlm_v2=True
+    )
+
+    if conn.connect(config.smb_server, SMB_PORT_139):
+        try:
+            log.info("SMB Verbindungsaufbau über Port 139 erfolgreich.")
+            full_file_path = f"{config.smb_path.rstrip('/')}/{backup_filename}"
+            log.info(f"Backup nach //{config.smb_server}/{config.smb_share}/{full_file_path}")
+
+            conn.storeFile(config.smb_share, full_file_path, io.BytesIO(backup_file))
+
+            try:
+                _enforce_retention(conn, config, backup_filename)
+            except Exception as error:
+                log.error(
+                    "Fehler bei der Bereinigung alter Samba-Backups (Port 139): %s",
+                    str(error).split("\n")[0],
+                )
+        except Exception as error:
+            raise Exception(
+                "Möglicherweise ist die Freigabe oder ein Unterordner nicht vorhanden."
+                + str(error).split("\n")[0]
+            )
+
+        finally:
+            conn.close()
+    else:
+        raise Exception("SMB Verbindungsaufbau über Port 139 fehlgeschlagen.")
 
 
 def create_backup_cloud(config: SambaBackupCloud):

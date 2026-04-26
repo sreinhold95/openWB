@@ -23,7 +23,7 @@
 				v-if="chargepoint.isSocManual"
 				class="fa-solid fa-sm fas fa-edit"
 				:style="{ color: 'var(--color-bg)' }"
-				@click="editSoc = !editSoc"
+				@click="toggleSocEditor()"
 			/>
 
 			<i
@@ -99,7 +99,7 @@
 				<span>
 					<RangeInput
 						id="manualSoc"
-						v-model="manualSoc"
+						v-model="tempsoc"
 						:min="0"
 						:max="100"
 						:step="1"
@@ -143,7 +143,7 @@
 			:id="'priceChartInline' + props.chargepoint.id"
 			class="d-flex flex-column rounded priceEditor grid-col-12"
 		>
-			<PriceChart
+			<PriceSelector
 				v-if="vehicles[props.chargepoint.connectedVehicle] != undefined"
 				:chargepoint="props.chargepoint"
 			/>
@@ -173,7 +173,7 @@ import RadioBarInput from '@/components/shared/RadioBarInput.vue'
 import RadioInput2 from '@/components/shared/RadioInput2.vue'
 import WbBadge from '../shared/WbBadge.vue'
 import RangeInput from '../shared/RangeInput.vue'
-import PriceChart from '../priceChart/PriceChart.vue'
+import PriceSelector from '../priceChart/PriceSelector.vue'
 import InfoItem from '@/components/shared/InfoItem.vue'
 import ChargingState from './ChargingState.vue'
 import { globalData } from '@/assets/js/model'
@@ -215,15 +215,7 @@ const chargedRangeString = computed(() => {
 const soc = computed(() => {
 	return props.chargepoint.soc
 })
-const manualSoc = computed({
-	get() {
-		return props.chargepoint.soc
-	},
-	set(s: number) {
-		chargePoints[props.chargepoint.id].soc = s
-	},
-})
-
+const tempsoc = ref(0)
 const currentPrice = computed(() => {
 	const [p] = etData.etPriceList.values()
 	return (Math.round(p * 10) / 10).toFixed(1)
@@ -264,8 +256,17 @@ function loadSoc() {
 	chargePoints[props.chargepoint.id].waitingForSoc = true
 }
 function setSoc() {
-	updateServer('setSoc', manualSoc.value, props.chargepoint.connectedVehicle)
+	//updateServer('setSoc', manualSoc.value, props.chargepoint.connectedVehicle)
+	updateServer('setSoc', tempsoc.value, props.chargepoint.connectedVehicle)
 	editSoc.value = false
+}
+function toggleSocEditor() {
+	if (editSoc.value) {
+		editSoc.value = false
+	} else {
+		tempsoc.value = props.chargepoint.soc
+		editSoc.value = true
+	}
 }
 </script>
 <style scoped>

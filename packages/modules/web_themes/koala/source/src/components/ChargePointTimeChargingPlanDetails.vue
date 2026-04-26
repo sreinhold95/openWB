@@ -1,5 +1,5 @@
 <template>
-  <q-card class="rounded-borders-md">
+  <q-card class="rounded-borders-md card-width">
     <q-card-section>
       <div class="row no-wrap">
         <div class="text-h6 ellipsis" :title="planName.value">
@@ -8,6 +8,12 @@
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup />
       </div>
+      <BaseMessage
+        :show-message="temporaryChargeModeActive"
+        message="Temporärer Modus aktiv. Alle Planänderungen werden nach dem Abstecken verworfen."
+        type="warning"
+        :collapsed="false"
+      />
     </q-card-section>
     <q-separator />
     <q-card-section>
@@ -36,74 +42,8 @@
           class="col"
         />
       </div>
-
-      <SliderStandard
-        class="q-mb-sm"
-        title="Ladestrom"
-        :min="6"
-        :max="32"
-        unit="A"
-        v-model="planCurrent.value"
-      />
-      <q-input
-        v-if="planDcChargingEnabled"
-        v-model="planDcPower.value"
-        label="Ladeleistung (DC)"
-        class="col q-mb-sm"
-      >
-        <template v-slot:append>
-          <div class="text-body2">kW</div>
-        </template>
-      </q-input>
-
-      <div class="text-subtitle2 q-mb-sm">Begrenzung</div>
-      <q-btn-group class="full-width">
-        <q-btn
-          size="sm"
-          class="flex-grow"
-          :color="planLimitSelected.value === 'none' ? 'primary' : 'grey'"
-          @click="planLimitSelected.value = 'none'"
-          label="Aus"
-        />
-        <q-btn
-          size="sm"
-          class="flex-grow"
-          :color="planLimitSelected.value === 'soc' ? 'primary' : 'grey'"
-          @click="planLimitSelected.value = 'soc'"
-          label="SoC"
-        />
-        <q-btn
-          size="sm"
-          class="flex-grow"
-          :color="planLimitSelected.value === 'amount' ? 'primary' : 'grey'"
-          @click="planLimitSelected.value = 'amount'"
-          label="Energie"
-        />
-      </q-btn-group>
-      <div v-if="planLimitSelected.value === 'soc'" class="q-mt-md">
-        <SliderStandard
-          title="Ziel-SoC für das Fahrzeug"
-          :min="5"
-          :max="100"
-          :step="5"
-          unit="%"
-          v-model="planSocLimit.value"
-          class="q-mt-sm"
-        />
-      </div>
-      <q-input
-        v-if="planLimitSelected.value === 'amount'"
-        v-model="planLimitAmount.value"
-        label="Ziel-Energie"
-        class="col"
-      >
-        <template v-slot:append>
-          <div class="text-body2">kWh</div>
-        </template>
-      </q-input>
-
-      <div class="q-mb-md">
-        <div class="text-subtitle2 q-mb-sm q-mt-md">Wiederholungen</div>
+      <div class="q-mb-sm">
+        <div class="text-subtitle2 q-mt-md">Wiederholungen</div>
         <q-btn-group spread>
           <q-btn
             size="sm"
@@ -156,21 +96,88 @@
           </div>
         </div>
       </div>
-
-      <div class="text-subtitle2 q-mt-sm q-mr-sm">Anzahl Phasen</div>
-      <div class="row items-center justify-center q-ma-none q-pa-none no-wrap">
-        <q-btn-group class="col">
-          <q-btn
-            v-for="option in phaseOptions"
-            :key="option.value"
-            :color="planNumPhases.value === option.value ? 'primary' : 'grey'"
-            :label="option.label"
-            size="sm"
-            class="col"
-            @click="planNumPhases.value = option.value"
-          />
-        </q-btn-group>
+      <SliderStandard
+        v-if="acChargingEnabled"
+        class="q-mb-sm"
+        title="Ladestrom"
+        :min="6"
+        :max="32"
+        unit="A"
+        v-model="planCurrent.value"
+      />
+      <q-input
+        v-if="dcChargingEnabled"
+        v-model="planDcPower.value"
+        label="Ladeleistung (DC)"
+        class="col q-mb-sm"
+      >
+        <template v-slot:append>
+          <div class="text-body2">kW</div>
+        </template>
+      </q-input>
+      <div v-if="acChargingEnabled">
+        <div class="text-subtitle2 q-mr-sm">Anzahl Phasen</div>
+        <div
+          class="row items-center justify-center q-ma-none q-pa-none no-wrap"
+        >
+          <q-btn-group class="col">
+            <q-btn
+              v-for="option in phaseOptions"
+              :key="option.value"
+              :color="planNumPhases.value === option.value ? 'primary' : 'grey'"
+              :label="option.label"
+              size="sm"
+              class="col"
+              @click="planNumPhases.value = option.value"
+            />
+          </q-btn-group>
+        </div>
       </div>
+      <div class="text-subtitle2 q-mt-sm">Begrenzung</div>
+      <q-btn-group class="full-width">
+        <q-btn
+          size="sm"
+          class="flex-grow"
+          :color="planLimitSelected.value === 'none' ? 'primary' : 'grey'"
+          @click="planLimitSelected.value = 'none'"
+          label="Keine"
+        />
+        <q-btn
+          size="sm"
+          class="flex-grow"
+          :color="planLimitSelected.value === 'soc' ? 'primary' : 'grey'"
+          @click="planLimitSelected.value = 'soc'"
+          label="EV-SoC"
+        />
+        <q-btn
+          size="sm"
+          class="flex-grow"
+          :color="planLimitSelected.value === 'amount' ? 'primary' : 'grey'"
+          @click="planLimitSelected.value = 'amount'"
+          label="Energie"
+        />
+      </q-btn-group>
+      <div v-if="planLimitSelected.value === 'soc'" class="q-mt-md">
+        <SliderStandard
+          title="SoC-Limit für das Fahrzeug"
+          :min="5"
+          :max="100"
+          :step="5"
+          unit="%"
+          v-model="planSocLimit.value"
+          class="q-mt-sm"
+        />
+      </div>
+      <q-input
+        v-if="planLimitSelected.value === 'amount'"
+        v-model="planLimitAmount.value"
+        label="Energie-Limit"
+        class="col"
+      >
+        <template v-slot:append>
+          <div class="text-body2">kWh</div>
+        </template>
+      </q-input>
       <div class="row q-mt-lg">
         <q-btn
           size="sm"
@@ -178,6 +185,18 @@
           color="negative"
           @click="removeTimeChargingPlan(plan.id)"
           >Plan löschen</q-btn
+        >
+      </div>
+      <div
+        v-if="temporaryChargeModeActive && chargeTemplateId != null"
+        class="row q-mt-md"
+      >
+        <q-btn
+          size="sm"
+          class="col charge-plan-link-button"
+          :href="`/openWB/web/settings/#/VehicleConfiguration/charge_template/${chargeTemplateId ?? ''}`"
+          ><q-icon left size="xs" name="settings" /> Persistente
+          Ladeplan-Einstellungen</q-btn
         >
       </div>
     </q-card-section>
@@ -188,6 +207,7 @@
 import { useMqttStore } from 'src/stores/mqtt-store';
 import SliderStandard from './SliderStandard.vue';
 import ToggleStandard from './ToggleStandard.vue';
+import BaseMessage from './BaseMessage.vue';
 import { type TimeChargingPlan } from '../stores/mqtt-store-model';
 import { computed } from 'vue';
 
@@ -285,10 +305,26 @@ const planNumPhases = computed(() =>
   mqttStore.vehicleTimeChargingPlanPhases(props.chargePointId, props.plan.id),
 );
 
-const planDcChargingEnabled = computed(() => mqttStore.dcChargingEnabled);
-
 const planDcPower = computed(() =>
   mqttStore.vehicleTimeChargingPlanDcPower(props.chargePointId, props.plan.id),
+);
+
+const dcChargingEnabled = computed(
+  () => mqttStore.chargePointChargeType(props.chargePointId).value === 'DC',
+);
+
+const acChargingEnabled = computed(
+  () => mqttStore.chargePointChargeType(props.chargePointId).value === 'AC',
+);
+
+const temporaryChargeModeActive = computed(
+  () => mqttStore.temporaryChargeModeActive,
+);
+
+const chargeTemplateId = computed(
+  () =>
+    mqttStore.chargePointConnectedVehicleChargeTemplate(props.chargePointId)
+      .value?.id,
 );
 
 const removeTimeChargingPlan = (planId: number) => {
@@ -298,10 +334,20 @@ const removeTimeChargingPlan = (planId: number) => {
 </script>
 
 <style scoped>
+.card-width {
+  max-width: 26em;
+}
+
 .q-btn-group .q-btn {
   min-width: 100px !important;
   font-size: 10px !important;
 }
+
+.charge-plan-link-button {
+  background-color: var(--q-charge-plan-link-button);
+  color: white;
+}
+
 .flex-grow {
   flex-grow: 1;
 }
