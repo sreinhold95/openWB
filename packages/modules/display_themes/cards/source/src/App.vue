@@ -60,10 +60,11 @@ export default {
         "openWB/chargepoint/+/set/log",
         "openWB/chargepoint/+/set/rfid",
         "openWB/chargepoint/get/power",
+        "openWB/consumer/get/power",
         "openWB/counter/+/get/power",
         "openWB/counter/get/hierarchy",
         "openWB/counter/set/home_consumption",
-        "openWB/general/chargemode_config/pv_charging/bat_mode",
+        "openWB/general/chargemode_config/bat/mode",
         "openWB/optional/ep/configured",
         "openWB/optional/ep/get/prices",
         "openWB/optional/int_display/only_local_charge_points",
@@ -81,6 +82,7 @@ export default {
         "openWB/system/security/access_allowed",
         "openWB/vehicle/+/get/fault_state",
         "openWB/vehicle/+/name",
+        "openWB/vehicle/+/color",
         "openWB/vehicle/+/info",
         "openWB/vehicle/+/soc_module/config",
       ],
@@ -274,7 +276,7 @@ export default {
      */
     sendCommand(event) {
       this.doPublish(
-        "openWB/set/command/" + this.client.options.clientId + "/todo",
+        "openWB/set/command/" + this.client.options.clientId + "/todo/" + event.command,
         event,
         false,
       );
@@ -295,7 +297,10 @@ export default {
 </script>
 
 <template>
-  <i-layout vertical>
+  <i-layout
+    vertical
+    class="_padding-y:1 _padding-left:1"
+  >
     <i-layout-aside class="_position:fixed">
       <i-container
         fluid

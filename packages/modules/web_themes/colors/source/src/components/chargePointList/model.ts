@@ -25,7 +25,7 @@ export class ChargePoint implements PowerItem {
 	private _isLocked = false
 	private _connectedVehicle = 0
 	chargeTemplate: ChargeTemplate | null = null
-	evTemplate = 0
+	_evTemplate = 0
 	private _chargeMode = ChargeMode.pv_charging
 	private _hasPriority = false
 	currentPlan = ''
@@ -71,7 +71,6 @@ export class ChargePoint implements PowerItem {
 	private _instantTargetSoc = 0
 	private _instantMaxEnergy = 0
 	private _instantTargetPhases = 0
-	private _pvFeedInLimit = false
 	private _pvMinCurrent = 0
 	private _pvMaxSoc = 0
 	private _pvMinSoc = 0
@@ -173,7 +172,7 @@ export class ChargePoint implements PowerItem {
 			this.chargeTemplate?.chargemode.instant_charging.limit.selected ?? 'none'
 		)
 	}
-	set instantChargeLimitMode(mode: string) {
+	set instantChargeLimitMode(mode: 'none' | 'soc' | 'amount') {
 		if (this.chargeTemplate) {
 			this.chargeTemplate.chargemode.instant_charging.limit.selected = mode
 			updateChargeTemplate(this.id)
@@ -203,15 +202,6 @@ export class ChargePoint implements PowerItem {
 	set instantTargetPhases(phases: number) {
 		if (this.chargeTemplate) {
 			this.chargeTemplate.chargemode.instant_charging.phases_to_use = phases
-			updateChargeTemplate(this.id)
-		}
-	}
-	get pvFeedInLimit() {
-		return this.chargeTemplate?.chargemode.pv_charging.feed_in_limit ?? false
-	}
-	set pvFeedInLimit(setting: boolean) {
-		if (this.chargeTemplate) {
-			this.chargeTemplate.chargemode.pv_charging.feed_in_limit = setting
 			updateChargeTemplate(this.id)
 		}
 	}
@@ -266,7 +256,7 @@ export class ChargePoint implements PowerItem {
 	get pvChargeLimitMode() {
 		return this.chargeTemplate?.chargemode.pv_charging.limit.selected ?? 'none'
 	}
-	set pvChargeLimitMode(mode: string) {
+	set pvChargeLimitMode(mode: 'none' | 'soc' | 'amount') {
 		if (this.chargeTemplate) {
 			this.chargeTemplate.chargemode.pv_charging.limit.selected = mode
 			updateChargeTemplate(this.id)
@@ -320,7 +310,7 @@ export class ChargePoint implements PowerItem {
 	get ecoChargeLimitMode() {
 		return this.chargeTemplate?.chargemode.eco_charging.limit.selected ?? 'none'
 	}
-	set ecoChargeLimitMode(mode: string) {
+	set ecoChargeLimitMode(mode: 'none' | 'soc' | 'amount') {
 		if (this.chargeTemplate) {
 			this.chargeTemplate.chargemode.eco_charging.limit.selected = mode
 			updateChargeTemplate(this.id)
@@ -376,6 +366,17 @@ export class ChargePoint implements PowerItem {
 				return 0
 		}
 	}
+	get priority() {
+		return vehicles[this.connectedVehicle]?.priority ?? 0
+	}
+	get evTemplate() {
+		// get this from teh connected vehicle, if any
+		if (vehicles[this.connectedVehicle]) {
+			return vehicles[this.connectedVehicle].evTemplateId
+		} else {
+			return 0
+		}
+	}
 }
 export class Vehicle {
 	id: number
@@ -384,6 +385,7 @@ export class Vehicle {
 	config = {}
 	soc = 0
 	range = 0
+	priority = 0
 	constructor(index: number) {
 		this.id = index
 	}
@@ -477,6 +479,12 @@ export interface ChargeSchedule {
 		weekly: [boolean, boolean, boolean, boolean, boolean, boolean, boolean]
 	}
 }
+export interface ChargeLimit {
+	selected: 'none' | 'soc' | 'amount'
+	amount: number
+	soc: number
+}
+
 export interface ChargeTemplate {
 	id: number
 	name: string
@@ -491,23 +499,14 @@ export interface ChargeTemplate {
 		eco_charging: {
 			current: number
 			dc_current: number
-			limit: {
-				selected: string
-				soc: number
-				amount: number
-			}
+			limit: ChargeLimit
 			max_price: number
 			phases_to_use: number
 		}
 		pv_charging: {
 			dc_min_current: number
 			dc_min_soc_current: number
-			feed_in_limit: boolean
-			limit: {
-				selected: string
-				amount: number
-				soc: number
-			}
+			limit: ChargeLimit
 			min_current: number
 			min_soc_current: number
 			min_soc: number
@@ -520,11 +519,7 @@ export interface ChargeTemplate {
 		instant_charging: {
 			current: number
 			dc_current: number
-			limit: {
-				selected: string
-				soc: number
-				amount: number
-			}
+			limit: ChargeLimit
 			phases_to_use: number
 		}
 	}
@@ -583,19 +578,28 @@ export function resetChargePoints() {
 
 export const topVehicles = computed(() => {
 	let result: number[] = []
-	const connectedVehicles = Object.values(chargePoints)
-		.filter((cp) => vehicles[cp.connectedVehicle] && vehicles[cp.connectedVehicle].isSocConfigured)
+	const connectedVehiclesWithSoc = Object.values(chargePoints)
+		.filter(
+			(cp) =>
+				vehicles[cp.connectedVehicle] &&
+				vehicles[cp.connectedVehicle].isSocConfigured,
+		)
 		.map((cp) => cp.connectedVehicle)
-	console.log('connected vehicles', connectedVehicles)
-	const otherVehicles = Object.values(vehicles)
-		.filter((v) => v.visible && v.isSocConfigured && !connectedVehicles.includes(v.id)) // only show vehicles with configured soc and that are visible
-	console.log('other vehicles', otherVehicles)
-	result = connectedVehicles.concat(otherVehicles.map((v) => v.id)).slice(0, 2)
-	if (result.length == 0) {
-		result = [-1,-1]
-	} else if (result.length == 1) {
+	const otherVehicles = Object.values(vehicles).filter(
+		(v) =>
+			v.visible &&
+			v.isSocConfigured &&
+			!connectedVehiclesWithSoc.includes(v.id),
+	)
+	result = connectedVehiclesWithSoc
+		.concat(otherVehicles.map((v) => v.id))
+		.slice(0, 4)
+	/*if (result.length == 0) {
+		result = [-1, -1]
+	} */ /*else if (result.length == 1) {
 		result.push(-1)
-	}
+	}*/
+	console.log(result)
 	return result
 })
 export const chargeLimitModes = [

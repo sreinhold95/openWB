@@ -15,7 +15,7 @@ class MTecConfiguration:
 
 class MTec:
     def __init__(self,
-                 name: str = "M-Tec",
+                 name: str = "M-Tec, Wattsonic, Solinteg",
                  type: str = "mtec",
                  id: int = 0,
                  configuration: MTecConfiguration = None) -> None:
@@ -36,11 +36,12 @@ class MTecBatConfiguration:
 @auto_str
 class MTecBatSetup(ComponentSetup[MTecBatConfiguration]):
     def __init__(self,
-                 name: str = "M-Tec Speicher",
+                 name: str = "M-Tec, Wattsonic, Solinteg Speicher",
                  type: str = "bat",
                  id: int = 0,
-                 configuration: MTecBatConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or MTecBatConfiguration())
+                 configuration: MTecBatConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or MTecBatConfiguration(), **kwargs)
 
 
 @auto_str
@@ -52,11 +53,12 @@ class MTecCounterConfiguration:
 @auto_str
 class MTecCounterSetup(ComponentSetup[MTecCounterConfiguration]):
     def __init__(self,
-                 name: str = "M-Tec Zähler",
+                 name: str = "M-Tec, Wattsonic, Solinteg Zähler",
                  type: str = "counter",
                  id: int = 0,
-                 configuration: MTecCounterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or MTecCounterConfiguration())
+                 configuration: MTecCounterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or MTecCounterConfiguration(), **kwargs)
 
 
 @auto_str
@@ -68,8 +70,9 @@ class MTecInverterConfiguration:
 @auto_str
 class MTecInverterSetup(ComponentSetup[MTecInverterConfiguration]):
     def __init__(self,
-                 name: str = "M-Tec Wechselrichter",
+                 name: str = "M-Tec, Wattsonic, Solinteg Wechselrichter",
                  type: str = "inverter",
                  id: int = 0,
-                 configuration: MTecInverterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or MTecInverterConfiguration())
+                 configuration: MTecInverterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or MTecInverterConfiguration(), **kwargs)

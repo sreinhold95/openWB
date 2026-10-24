@@ -1,16 +1,17 @@
 import logging
 import time
-from typing import TypedDict, Any, Optional
+from typing import TypedDict, Any
 from modules.common.abstract_device import AbstractBat
 from modules.common.component_state import BatState
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, ModbusTcpClient_
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.alpha_ess.alpha_ess.config import AlphaEssBatSetup
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,8 @@ class AlphaEssBat(AbstractBat):
     def initialize(self) -> None:
         self.__tcp_client: ModbusTcpClient_ = self.kwargs['tcp_client']
         self.__modbus_id: int = self.kwargs['modbus_id']
-        self.sim_counter = SimCounter(self.kwargs['device_id'], self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.kwargs['device_id'], self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
         self.last_mode = 'Undefined'
@@ -62,16 +63,16 @@ class AlphaEssBat(AbstractBat):
         )
         self.store.set(bat_state)
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
         unit = self.__modbus_id
 
-        if power_limit is None:
+        if setpoint.power_limit is None:
             # Kein Powerlimit gefordert, externe Steuerung deaktivieren
             log.debug("Keine Batteriesteuerung gefordert, deaktiviere externe Steuerung.")
             if self.last_mode is not None:
                 self.__tcp_client.write_register(2127, 0, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.last_mode = None
-        elif power_limit <= 0:
+        elif setpoint.power_limit <= 0:
             # AlphaESS kann die Entladung nur über den SoC verhindern (komplette Entladesperre)
             # Netzladung mit geringen Ziel SoC verhindert auch Entladung (Default 10%)
             # Zeiten für Netzladung müssen im Wechselrichter aktiviert werden

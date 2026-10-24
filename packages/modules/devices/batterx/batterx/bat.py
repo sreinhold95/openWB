@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import logging
-from typing import Dict, TypedDict, Any, Optional
+from typing import Dict, TypedDict, Any
 
 from modules.devices.batterx.batterx.config import BatterXBatSetup
 from modules.common.abstract_device import AbstractBat
@@ -8,10 +8,11 @@ from modules.common.component_state import BatState
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 from modules.common import req
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,8 @@ class BatterXBat(AbstractBat):
     def initialize(self) -> None:
         self.__device_id: int = self.kwargs['device_id']
         self.__ip_address: str = self.kwargs['ip_address']
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
         self.last_mode = 'Undefined'
@@ -49,10 +50,10 @@ class BatterXBat(AbstractBat):
         )
         self.store.set(bat_state)
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
         log.debug(f'last_mode: {self.last_mode}')
 
-        if power_limit is None:
+        if setpoint.power_limit is None:
             # Kein Powerlimit gefordert, externe Steuerung deaktivieren
             log.debug("Keine Batteriesteuerung gefordert, deaktiviere externe Steuerung.")
             if self.last_mode is not None:
@@ -67,7 +68,7 @@ class BatterXBat(AbstractBat):
                     timeout=5
                 )
                 self.last_mode = None
-        elif power_limit <= 0:
+        elif setpoint.power_limit <= 0:
             # BatterX kann Entladung nur komplett sperren
             log.debug("Aktive Batteriesteuerung angestoßen. Setze Entladesperre.")
             if self.last_mode != 'stop':

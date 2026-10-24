@@ -5,12 +5,14 @@ export type ColumnConfiguration = {
   label: string;
   align?: 'left' | 'right' | 'center';
   expandField?: boolean;
+  autoWidth?: boolean;
+  shrink?: boolean;
 };
 
 export interface BodySlotProps<T> {
   key: string | number;
   row: T;
-  cols: QTableColumn[];
+  cols: ExtendedQTableColumn[];
   expand: boolean;
 }
 
@@ -27,6 +29,9 @@ export interface ChargePointRow extends Record<string, unknown> {
   current: string;
   powerColumn: '';
   charged: string;
+  faultState: number;
+  faultMessage: string;
+  color?: string;
 }
 
 export interface VehicleRow extends Record<string, unknown> {
@@ -37,4 +42,12 @@ export interface VehicleRow extends Record<string, unknown> {
   plugState: boolean;
   chargeState: boolean;
   vehicleSocValue: string;
+  faultState: number;
+  faultMessage: string;
+  color?: string;
 }
+
+export type ExtendedQTableColumn = QTableColumn & {
+  autoWidth?: boolean;
+  shrink?: boolean;
+};

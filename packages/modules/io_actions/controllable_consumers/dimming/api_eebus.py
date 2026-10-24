@@ -9,8 +9,9 @@ from helpermodules.timecheck import create_timestamp
 from dataclass_utils import asdict
 from modules.common.abstract_io import AbstractIoAction
 from modules.common.utils.component_parser import get_io_name_by_id
-from modules.io_actions.common import check_fault_state_io_device
+from modules.io_actions.common import check_fault_state_io_device, get_power_log_message
 from modules.io_actions.controllable_consumers.dimming.config import DimmingSetup
+from modules.io_actions.controllable_consumers.dimming.utils import calc_dimming_surplus
 from modules.io_devices.eebus.config import AnalogInputMapping, DigitalInputMapping
 
 log = logging.getLogger(__name__)
@@ -35,38 +36,32 @@ class DimmingEebus(AbstractIoAction):
         super().__init__()
 
     def setup(self) -> None:
-        lpc_value = data.data.io_states[f"io_states{self.config.configuration.io_device}"
-                                        ].data.get.analog_input[AnalogInputMapping.LPC_VALUE.name]
-        surplus = data.data.counter_data[data.data.counter_all_data.get_evu_counter_str()].calc_raw_surplus()
-        if surplus > 0:
-            self.import_power_left = lpc_value + surplus
+
+        surplus = calc_dimming_surplus()
+        if check_fault_state_io_device(self.config.configuration.io_device):
+            self.import_power_left = surplus
         else:
-            self.import_power_left = lpc_value
-        self.import_power_left -= self.config.configuration.fixed_import_power
+            lpc_value = data.data.io_states[f"io_states{self.config.configuration.io_device}"
+                                            ].data.get.analog_input[AnalogInputMapping.LPC_VALUE.name]
+            if surplus > 0:
+                self.import_power_left = lpc_value + surplus
+            else:
+                self.import_power_left = lpc_value
+            self.import_power_left = max(0, self.import_power_left - self.config.configuration.fixed_import_power)
         log.debug(f"Dimmen: {self.import_power_left}W inkl. Überschuss")
 
         with ModifyLoglevelContext(control_command_log, logging.DEBUG):
-            if self.dimming_active() or check_fault_state_io_device(self.config.configuration.io_device):
+            if check_fault_state_io_device(self.config.configuration.io_device) or self.dimming_active():
+                if check_fault_state_io_device(self.config.configuration.io_device):
+                    control_command_log.info(
+                        "Fehler des IO-Geräts: Dimmen aktiviert für Failsafe-Modus.")
                 if self.timestamp is None:
                     Pub().pub(f"openWB/set/io/action/{self.config.id}/timestamp", create_timestamp())
-                    if check_fault_state_io_device(self.config.configuration.io_device):
-                        control_command_log.info(
-                            "Fehler des IO-Geräts: Dimmen aktiviert für Failsafe-Modus.")
-                    control_command_log.info(f"Dimmen aktiviert. Übermittelter LPC-Wert: {lpc_value/1000}kWh. "
-                                             "Leistungswerte vor Ausführung des Steuerbefehls:")
+                    if check_fault_state_io_device(self.config.configuration.io_device) is False:
+                        control_command_log.info(f"Dimmen aktiviert. Übermittelter LPC-Wert: {lpc_value/1000}kWh. "
+                                                 "Leistungswerte vor Ausführung des Steuerbefehls:")
 
-                evu_counter = data.data.counter_data[data.data.counter_all_data.get_evu_counter_str()]
-                msg = f"EVU-Zähler: {evu_counter.data.get.powers}W, {evu_counter.data.get.power}W"
-                for device in self.config.configuration.devices:
-                    if device["type"] == "cp":
-                        cp = f"cp{device['id']}"
-                        msg += (f", Ladepunkt {data.data.cp_data[cp].data.config.name}: "
-                                f"{data.data.cp_data[cp].data.get.powers}W")
-                    if device["type"] == "io":
-                        io = f"io{device['id']}"
-                        msg += (f", {data.data.system_data[io].config.name}: "
-                                "Leistung unbekannt")
-                control_command_log.info(msg)
+                control_command_log.info(get_power_log_message(self.config.configuration.devices))
             elif self.timestamp:
                 Pub().pub(f"openWB/set/io/action/{self.config.id}/timestamp", None)
                 control_command_log.info("Dimmen deaktiviert.")

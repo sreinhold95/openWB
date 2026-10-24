@@ -5,6 +5,8 @@ import pytest
 
 from control import data
 from control.chargelog import chargelog
+from control.chargemode import Chargemode
+from control.chargepoint.charging_type import ChargingType
 from control.chargepoint.chargepoint import Chargepoint
 from control.chargepoint.chargepoint_state import ChargepointState
 from control.chargepoint.chargepoint_template import CpTemplate
@@ -61,6 +63,102 @@ def test_check_min_max_current(required_current, phases, expected_required_curre
     monkeypatch.setattr(Ev, "check_min_max_current", mock_ev_check_min_max_current)
     # evaluation
     ret = cp.check_min_max_current(required_current, phases)
+
+    # assertion
+    assert ret == expected_required_current
+
+
+@pytest.mark.parametrize("state_prev, expected_message_present",
+                         [
+                             pytest.param(ChargepointState.SWITCH_ON_DELAY, True,
+                                          id="Ladestart nach Einschaltverzoegerung: CP-Unterbrechung noetig"),
+                             pytest.param(ChargepointState.NO_CHARGING_ALLOWED, True,
+                                          id="regulaerer Ladestart: CP-Unterbrechung noetig"),
+                             pytest.param(ChargepointState.PERFORMING_PHASE_SWITCH, False,
+                                          id="direkt nach Phasenumschaltung: keine zusaetzliche CP-Unterbrechung"),
+                         ])
+def test_initiate_control_pilot_interruption_uses_state_prev_not_state(state_prev, expected_message_present):
+    """ WAIT_FOR_USING_PHASES wird nicht nur direkt nach einer echten Phasenumschaltung erreicht, sondern
+    zB auch direkt nach Ablauf der Einschaltverzoegerung (siehe Discussion #3908, lackylacky) - dort war
+    dann also nach jedem PV-Ladestart mit reiner Ein-Phasen-Ladung (kein hw_supports_phase_switch())
+    dauerhaft keine Control-Pilot-Unterbrechung mehr moeglich. state_prev unterscheidet die beiden
+    Faelle korrekt, state (aktuell WAIT_FOR_USING_PHASES in beiden Faellen) nicht. """
+    # setup
+    cp = Chargepoint(0, None)
+    cp.chargepoint_module = Mock(interrupt_cp=Mock(), config=Mock(id=0))
+    cp.data.set.charging_ev_data = Ev(0)
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption = True
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption_duration = 4
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption_retry_interval = 0
+    cp.data.config.control_pilot_interruption_hw = True
+    # state_prev ueber remember_previous_values() setzen statt direkt zuzuweisen
+    cp.data.set.current = 0
+    cp.data.control_parameter.state = state_prev
+    cp.remember_previous_values()
+    # aktueller Zyklus: Ladung startet
+    cp.data.control_parameter.state = ChargepointState.WAIT_FOR_USING_PHASES
+    cp.data.set.current = 6
+
+    # evaluation
+    cp.initiate_control_pilot_interruption()
+
+    # assertion
+    message_present = (cp.data.get.state_str is not None and
+                       "Control-Pilot-Unterbrechung" in cp.data.get.state_str)
+    assert message_present == expected_message_present
+
+
+def test_initiate_control_pilot_interruption_skipped_when_phase_switch_pending():
+    """ Kontaktoren stehen noch auf falscher Phasenzahl -> initiate_phase_switch() schaltet im selben
+    Zyklus bereits CP um, keine zusaetzliche Unterbrechung noetig. """
+    # setup
+    cp = Chargepoint(0, None)
+    cp.chargepoint_module = Mock(interrupt_cp=Mock(), config=Mock(id=0))
+    cp.data.set.charging_ev_data = Ev(0)
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption = True
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption_duration = 4
+    cp.data.set.charging_ev_data.ev_template.data.control_pilot_interruption_retry_interval = 0
+    cp.data.config.control_pilot_interruption_hw = True
+    cp.data.set.current = 0
+    cp.data.control_parameter.state = ChargepointState.SWITCH_ON_DELAY
+    cp.remember_previous_values()
+    cp.data.control_parameter.state = ChargepointState.WAIT_FOR_USING_PHASES
+    cp.data.set.current = 6
+    # Kontaktoren (1p) weichen von der benoetigten Phasenzahl (3p) ab
+    cp.data.set.phases_to_use = 3
+    cp.data.control_parameter.phases = 1
+
+    # evaluation
+    cp.initiate_control_pilot_interruption()
+
+    # assertion
+    message_present = (cp.data.get.state_str is not None and
+                       "Control-Pilot-Unterbrechung" in cp.data.get.state_str)
+    assert message_present is False
+
+
+@pytest.mark.parametrize("required_current, max_discharge_power, dc_max_current, expected_required_current",
+                         [
+                             pytest.param(-50, -30000, 25, -25,
+                                          id="Entladung durch CP-Hardwaregrenze begrenzt"),
+                             pytest.param(-10, -30000, 25, -10,
+                                          id="Entladung innerhalb der CP-Hardwaregrenze"),
+                         ])
+def test_check_min_max_current_bidi_discharge_respects_cp_hardware_limit(
+        required_current, max_discharge_power, dc_max_current, expected_required_current):
+    """ Beim Entladen (BIDI_CHARGING, required_current < 0) muss die eigene Hardware-Stromgrenze des
+    Ladepunkts (dc_max_current) genauso durchgesetzt werden wie beim Laden - vor diesem Fix wurde
+    check_cp_max_current() im Entlade-Zweig gar nicht aufgerufen (siehe #3795). """
+    # setup
+    cp = Chargepoint(0, None)
+    cp.template = CpTemplate()
+    cp.template.data.charging_type = ChargingType.DC.value
+    cp.template.data.dc_max_current = dc_max_current
+    cp.data.control_parameter.submode = Chargemode.BIDI_CHARGING
+    cp.data.get.max_discharge_power = max_discharge_power
+
+    # evaluation
+    ret = cp.check_min_max_current(required_current, 1)
 
     # assertion
     assert ret == expected_required_current
@@ -147,7 +245,7 @@ def test_is_phase_switch_required(params: Params):
     cp.data.get.charge_state = params.charge_state
     cp.data.control_parameter.failed_phase_switches = params.failed_phase_switches
     data.data_init(Mock())
-    data.data.general_data.data.chargemode_config.pv_charging.retry_failed_phase_switches = (
+    data.data.general_data.data.chargemode_config.surplus.vehicle.retry_failed_phase_switches = (
         params.retry_failed_phase_switches
     )
 

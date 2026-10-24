@@ -1,20 +1,25 @@
 """ Modul, um die Daten vom Broker zu erhalten.
 """
+from enum import Enum
 import importlib
 import logging
 from pathlib import Path
 from threading import Event
-from typing import Dict, Union
+from typing import Any, Dict, Optional, Union
 import re
 import subprocess
 import paho.mqtt.client as mqtt
 
-from control import bat_all, bat, counter, counter_all, general, io_device, optional, pv, pv_all
+from control import bat_all, bat, counter, general, io_device, optional, pv, pv_all
 from control.chargepoint import chargepoint
 from control.chargepoint.chargepoint_all import AllChargepoints
 from control.chargepoint.chargepoint_data import Log
 from control.chargepoint.chargepoint_state_update import ChargepointStateUpdate
 from control.chargepoint.chargepoint_template import CpTemplate, CpTemplateData
+from control.consumer.consumer_data import Usage
+from control.counter_all import counter_all
+from control.consumer.consumer import Consumer
+from control.consumer.consumer_all import AllConsumers
 from control.ev.charge_template import ChargeTemplate, ChargeTemplateData
 from control.ev import ev
 from control.ev.ev_template import EvTemplate, EvTemplateData
@@ -22,6 +27,7 @@ from control.limiting_value import LoadmanagementLimit
 from control.optional_data import Ocpp
 from helpermodules import graph, system
 from helpermodules.broker import BrokerClient
+from helpermodules.constants import DEFAULT_COLORS
 from helpermodules.messaging import MessageType, pub_system_message
 from helpermodules.mosquitto_dynsec.role_handler import add_acl_role, remove_acl_role
 from helpermodules.mosquitto_dynsec.user_handler import remove_display_user, create_display_user
@@ -30,8 +36,11 @@ from helpermodules.utils.run_command import run_command
 from helpermodules.utils.topic_parser import decode_payload, get_index, get_second_index
 from helpermodules.pub import Pub
 from dataclass_utils import asdict, dataclass_from_dict
+from modules.common.abstract_device import AbstractDevice
 from modules.common.abstract_vehicle import CalculatedSocState, GeneralVehicleConfig
+from modules.common.component_type import ComponentType
 from modules.common.configurable_backup_cloud import ConfigurableBackupCloud
+from modules.common.configurable_forecast import ConfigurableForecastProvider
 from modules.common.configurable_tariff import ConfigurableFlexibleTariff, ConfigurableGridFee
 from modules.common.simcount.simcounter_state import SimCounterState
 from modules.internal_chargepoint_handler.internal_chargepoint_handler_config import (
@@ -71,6 +80,8 @@ class SubData:
     optional_data = optional.Optional()
     system_data = {"system": system.System()}
     graph_data = graph.Graph()
+    consumer_data: Dict[str, Consumer] = {}
+    consumer_all_data = AllConsumers()
 
     def __init__(self,
                  event_ev_template: Event,
@@ -136,6 +147,14 @@ class SubData:
             ("openWB/internal_io/#", 2),
             ("openWB/optional/#", 2),
             ("openWB/counter/#", 2),
+            ("openWB/consumer/get/#", 2),
+            ("openWB/consumer/+/config", 2),
+            ("openWB/consumer/+/extra_meter", 2),
+            ("openWB/consumer/+/module", 2),
+            ("openWB/consumer/+/usage", 2),
+            ("openWB/consumer/+/get/#", 2),
+            ("openWB/consumer/+/set/#", 2),
+            ("openWB/consumer/+/control_parameter/#", 2),
             ("openWB/command/command_completed", 2),
             ("openWB/internal_chargepoint/#", 2),
             # MQTT Bridge Topics vor "openWB/system/+" abonnieren, damit sie auch vor
@@ -196,6 +215,8 @@ class SubData:
             self.process_legacy_smarthome_topic(client, self.counter_all_data, msg)
         elif "openWB/command/command_completed" == msg.topic:
             self.event_command_completed.set()
+        elif "openWB/consumer/" in msg.topic:
+            self.process_consumer_topic(client, self.consumer_data, msg)
         else:
             log.warning("unknown subdata-topic: "+str(msg.topic))
 
@@ -242,7 +263,12 @@ class SubData:
                     payload = decode_payload(msg.payload)
                     if isinstance(payload, Dict):
                         for key, value in payload.items():
+                            current_value = getattr(class_obj, key, None)
+                            if isinstance(current_value, Enum):
+                                value = type(current_value)(value)
                             setattr(class_obj, key, value)
+                    elif isinstance(getattr(class_obj, key, None), Enum):
+                        setattr(class_obj, key, type(getattr(class_obj, key))(payload))
                     else:
                         setattr(class_obj, key, decode_payload(msg.payload))
                 else:
@@ -626,8 +652,14 @@ class SubData:
                 if re.search("/general/prices/", msg.topic) is not None:
                     self.set_json_payload_class(var.data.prices, msg)
                 elif re.search("/general/chargemode_config/", msg.topic) is not None:
-                    if re.search("/general/chargemode_config/pv_charging/", msg.topic) is not None:
-                        self.set_json_payload_class(var.data.chargemode_config.pv_charging, msg)
+                    if re.search("/general/chargemode_config/surplus/consumer", msg.topic) is not None:
+                        self.set_json_payload_class(var.data.chargemode_config.surplus.consumer, msg)
+                    elif re.search("/general/chargemode_config/surplus/vehicle", msg.topic) is not None:
+                        self.set_json_payload_class(var.data.chargemode_config.surplus.vehicle, msg)
+                    elif re.search("/general/chargemode_config/surplus/", msg.topic) is not None:
+                        self.set_json_payload_class(var.data.chargemode_config.surplus, msg)
+                    elif re.search("/general/chargemode_config/bat/", msg.topic) is not None:
+                        self.set_json_payload_class(var.data.chargemode_config.bat, msg)
                     else:
                         self.set_json_payload_class(var.data.chargemode_config, msg)
                 elif "openWB/general/extern" == msg.topic:
@@ -795,6 +827,27 @@ class SubData:
                     self.set_json_payload_class(var.data.electricity_pricing.get, msg)
                 elif re.search("/optional/ep/", msg.topic) is not None:
                     self.set_json_payload_class(var.data.electricity_pricing, msg)
+                elif re.search("/optional/forecast/provider$", msg.topic) is not None:
+                    config_dict = decode_payload(msg.payload)
+                    if not isinstance(config_dict, dict) or config_dict.get("type") is None:
+                        # Ignore during startup to avoid stale retained null payloads clearing a valid provider.
+                        if self.event_subdata_initialized.is_set():
+                            if var.forecast_module is not None or var.data.forecast.provider is not None:
+                                var.data.forecast.provider = None
+                                var.forecast_module = None
+                    else:
+                        var.data.forecast.provider = config_dict
+                        mod = importlib.import_module(
+                            f".forecast.{config_dict['type']}.forecast", "modules")
+                        config = dataclass_from_dict(mod.device_descriptor.configuration_factory, config_dict)
+                        # Compare parsed config (unknown fields stripped) to avoid re-init on every retained update.
+                        current_config = asdict(var.forecast_module.config) if var.forecast_module is not None else None
+                        if current_config != asdict(config):
+                            var.forecast_module = ConfigurableForecastProvider(config, mod.create_forecast)
+                elif re.search("/optional/forecast/get/", msg.topic) is not None:
+                    self.set_json_payload_class(var.data.forecast.get, msg)
+                elif re.search("/optional/forecast/", msg.topic) is not None:
+                    self.set_json_payload_class(var.data.forecast, msg)
                 elif "module_update_completed" in msg.topic:
                     self.event_module_update_completed.set()
                 elif re.search("/optional/ocpp/", msg.topic) is not None:
@@ -829,6 +882,27 @@ class SubData:
         msg :
             enthält Topic und Payload
         """
+
+        def get_component_obj_by_id(id: int) -> Optional[Any]:
+            for item in self.system_data.values():
+                if isinstance(item, AbstractDevice):
+                    for component in item.components.values():
+                        if component.component_config.id == id:
+                            return component
+            else:
+                log.error(f"Element {id} konnte keiner Komponente zugeordnet werden.")
+                return None
+
+        def get_device_id_by_component_id(id: int) -> Optional[int]:
+            for item in self.system_data.values():
+                if isinstance(item, AbstractDevice):
+                    for comp in item.components.values():
+                        if comp.component_config.id == id:
+                            return item.device_config.id
+            else:
+                log.error(f"Element {id} konnte keinem Gerät zugeordnet werden.")
+                return None
+
         try:
             if re.search("/counter/[0-9]+/", msg.topic) is not None:
                 index = get_index(msg.topic)
@@ -845,10 +919,31 @@ class SubData:
                     elif re.search("/counter/[0-9]+/config/", msg.topic) is not None:
                         self.set_json_payload_class(var["counter"+index].data.config, msg)
             elif re.search("/counter/", msg.topic) is not None:
-                if re.search("/counter/config", msg.topic) is not None:
+                if re.search("/config/", msg.topic) is not None:
                     self.set_json_payload_class(self.counter_all_data.data.config, msg)
                 elif re.search("/counter/get", msg.topic) is not None:
                     self.set_json_payload_class(self.counter_all_data.data.get, msg)
+                    if self.event_subdata_initialized.is_set() and re.search("/hierarchy$", msg.topic) is not None:
+                        hierarchy: Optional[list[dict]] = decode_payload(msg.payload)
+                        if hierarchy is not None:
+                            if ComponentType.COUNTER.value == hierarchy[0].get("type"):
+                                try:
+                                    grid_counter_id = self.counter_all_data.get_id_evu_counter()
+                                    if grid_counter_id is None:
+                                        return
+                                    grid_device_id = get_device_id_by_component_id(grid_counter_id)
+                                    if grid_device_id is None:
+                                        return
+                                    grid_configuration = get_component_obj_by_id(grid_counter_id)
+                                    if grid_configuration is None:
+                                        return
+                                    grid_configuration.component_config.color = DEFAULT_COLORS.COUNTER.value
+                                    Pub().pub(
+                                        f"openWB/system/device/{grid_device_id}/component/{grid_counter_id}/config",
+                                        asdict(grid_configuration.component_config)
+                                    )
+                                except Exception as e:
+                                    log.exception(f"Fehler beim Setzen der Farbe für den EVU-Zähler: {e}")
                 elif re.search("/counter/set/simulation", msg.topic) is not None:
                     self.counter_all_data.sim_counter.data = dataclass_from_dict(
                         SimCounterState,
@@ -988,7 +1083,8 @@ class SubData:
                 index = get_index(msg.topic)
                 if decode_payload(msg.payload) == "":
                     if "io"+index in var:
-                        if var[f"io{index}"].config.configuration.host == "localhost":
+                        if (var[f"io{index}"].config.type == "add_on" and
+                                var[f"io{index}"].config.configuration.host == "localhost"):
                             var.pop("iolocal")
                         var.pop("io"+index)
                     else:
@@ -1005,7 +1101,10 @@ class SubData:
                     dev = importlib.import_module(f".io_devices.{io_config['type']}.api",
                                                   "modules")
                     config = dataclass_from_dict(dev.device_descriptor.configuration_factory, io_config)
-                    var["io"+index] = dev.create_io(config)
+                    if (self.event_subdata_initialized.is_set() is False or
+                            "io"+index not in var or
+                            io_config != asdict(var["io"+index].config)):
+                        var["io"+index] = dev.create_io(config)
             elif re.search("^.+/io/[0-9]+/set/manual/analog_output", msg.topic) is not None:
                 index = get_index(msg.topic)
                 self.set_json_payload(var["io"+index].set_manual["analog_output"], msg)
@@ -1045,6 +1144,22 @@ class SubData:
                     #     "neu starten</a>, damit die Änderungen wirksam werden.",
                     #     MessageType.SUCCESS
                     # )
+                self.set_json_payload(var["system"].data, msg)
+            elif "openWB/system/pnp_ip" == msg.topic:
+                new_pnp_ip = decode_payload(msg.payload)
+                if (
+                    self.event_subdata_initialized.is_set() and
+                    var["system"].data["pnp_ip"] != new_pnp_ip
+                ):
+                    log.warning("Änderung der Einstellung 'pnp_ip' erkannt. "
+                                "Konfiguration wird beim nächsten Neustart angepasst.")
+                    pub_system_message(
+                        msg.payload,
+                        f"Die PnP-IP wird zu <strong>{new_pnp_ip['address']}/{new_pnp_ip['prefix']}</strong> geändert."
+                        "<br />Bitte die openWB <a href=\"/openWB/web/settings/#/System/SystemConfiguration\">"
+                        "neu starten</a>, damit die Änderungen wirksam werden.",
+                        MessageType.WARNING
+                    )
                 self.set_json_payload(var["system"].data, msg)
             elif "openWB/system/security/user_management_active" == msg.topic:
                 user_management_active = decode_payload(msg.payload)
@@ -1149,5 +1264,82 @@ class SubData:
             if "openWB/LegacySmartHome/Status/wattnichtHaus" == msg.topic:
                 # keine automatische Zuordnung, da das Topic anders heißt als der Wert in der Datenstruktur
                 var.data.set.smarthome_power_excluded_from_home_consumption = decode_payload(msg.payload)
+        except Exception:
+            log.exception("Fehler im subdata-Modul")
+
+    def process_consumer_topic(self, client: mqtt.Client, var: Dict[str, Consumer], msg: mqtt.MQTTMessage):
+        try:
+            index = get_index(msg.topic)
+            if re.search("openWB/consumer/[0-9]+/", msg.topic) is not None:
+                if decode_payload(msg.payload) == "":
+                    if "consumer"+index in var:
+                        var.pop("consumer"+index)
+                else:
+                    if f"consumer{index}" not in var:
+                        if re.search(
+                                r"openWB/consumer/[0-9]+/(module|config|usage|extra_meter)$", msg.topic) is None:
+                            return
+                        var[f"consumer{index}"] = Consumer(int(index))
+                    if re.search("openWB/consumer/[0-9]+/module$", msg.topic) is not None:
+                        consumer_config = decode_payload(msg.payload)
+                        try:
+                            con = importlib.import_module(
+                                f".consumers.{consumer_config['vendor']}.{consumer_config['type']}.consumer",
+                                "modules")
+                            config = dataclass_from_dict(
+                                con.device_descriptor.configuration_factory, consumer_config)
+                            var["consumer"+index].module = con.create_consumer(config)
+                            var["consumer"+index].data.module = config
+                            client.subscribe(f"openWB/consumer/{index}/module/simulation", 2)
+                            self.processing_counter.add_task()
+                            Pub().pub("openWB/system/subdata_initialized", True)
+                        except Exception:
+                            fault_str = (
+                                f"Verbraucher {index}: Modul für "
+                                f"{consumer_config.get('vendor')}/{consumer_config.get('type')} konnte nicht "
+                                "erstellt werden, siehe Log.")
+                            log.exception(fault_str)
+                            var["consumer"+index].data.get.fault_state = 2
+                            var["consumer"+index].data.get.fault_str = fault_str
+                            pub_system_message({}, fault_str, MessageType.ERROR)
+                    elif re.search("openWB/consumer/[0-9]+/module/simulation$", msg.topic) is not None:
+                        var["consumer"+index].module.sim_counter.data = dataclass_from_dict(
+                            SimCounterState, decode_payload(msg.payload))
+                    elif re.search("openWB/consumer/[0-9]+/config", msg.topic) is not None:
+                        self.set_json_payload_class(var["consumer"+index].data.config, msg)
+                    elif re.search("openWB/consumer/[0-9]+/get", msg.topic) is not None:
+                        self.set_json_payload_class(var["consumer"+index].data.get, msg)
+                    elif re.search("openWB/consumer/[0-9]+/set", msg.topic) is not None:
+                        self.set_json_payload_class(var["consumer"+index].data.set, msg)
+                    elif re.search("openWB/consumer/[0-9]+/extra_meter", msg.topic) is not None:
+                        old_extra_meter = var[f"consumer{index}"].data.extra_meter
+                        self.set_json_payload_class(var[f"consumer{index}"].data, msg)
+                        if self.event_subdata_initialized.is_set() and old_extra_meter != var[
+                                f"consumer{index}"].data.extra_meter:
+                            # Only restore the previous meter if its configuration still exists.
+                            if f"counter{old_extra_meter}" not in self.counter_data:
+                                old_extra_meter = None
+                            if self.counter_all_data.update_linked_counter_hierarchy(
+                                    int(index),
+                                    old_extra_meter,
+                                    var[f"consumer{index}"].data.extra_meter):
+                                Pub().pub("openWB/set/counter/get/hierarchy",
+                                          self.counter_all_data.data.get.hierarchy)
+                    elif re.search("openWB/consumer/[0-9]+/usage$", msg.topic) is not None:
+                        usage = dataclass_from_dict(Usage, decode_payload(msg.payload))
+                        var[f"consumer{index}"].data.usage = usage
+                        if (self.event_subdata_initialized.is_set() and
+                                self.counter_all_data.update_consumer_loadmanagement_prio(int(index), usage.type)):
+                            Pub().pub("openWB/set/counter/get/loadmanagement_prios",
+                                      self.counter_all_data.data.get.loadmanagement_prios)
+                    elif re.search("openWB/consumer/[0-9]+/control_parameter/", msg.topic) is not None:
+                        if re.search("openWB/consumer/[0-9]+/control_parameter/limit", msg.topic) is not None:
+                            payload = decode_payload(msg.payload)
+                            var[f"consumer{index}"].data.control_parameter.limit = dataclass_from_dict(
+                                LoadmanagementLimit, payload)
+                        else:
+                            self.set_json_payload_class(var[f"consumer{index}"].data.control_parameter, msg)
+            elif re.search("/consumer/get/", msg.topic) is not None:
+                self.set_json_payload_class(self.consumer_all_data.data.get, msg)
         except Exception:
             log.exception("Fehler im subdata-Modul")

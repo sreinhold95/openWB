@@ -21,37 +21,42 @@
     :columns-to-search="['name', 'manufacturer', 'model']"
     :row-expandable="true"
     @row-click="onRowClick"
+    :row-color="(row) => row.color"
   >
     <!-- "col" = column must match Quasar naming convention -->
     <template #row-expand="slotProps">
       <VehicleConnectionStateIcon :vehicle-id="slotProps.row.id" />
     </template>
     <template #body-cell-name="slotProps">
-      <q-td :class="[`text-${slotProps.col.align}`, 'max-width-0']">
-        <div class="ellipsis" :title="slotProps.row.name">
+      <div class="row items-center no-wrap">
+        <BaseFaultIcon
+          v-if="faultPresent"
+          :fault-state="slotProps.row.faultState"
+          class="q-ml-sm"
+        />
+        <div
+          class="col ellipsis"
+          :class="faultPresent ? 'q-ml-xs' : 'q-ml-sm'"
+          @mouseenter="titleIfTruncated"
+        >
           {{ slotProps.row.name }}
         </div>
-      </q-td>
+        <q-tooltip v-if="slotProps.row.faultState > 0 && tooltipsEnabled">
+          {{ slotProps.row.faultMessage }}
+        </q-tooltip>
+      </div>
     </template>
     <template #body-cell-manufacturer="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        {{ slotProps.row.manufacturer }}
-      </q-td>
+      {{ slotProps.row.manufacturer }}
     </template>
     <template #body-cell-model="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        {{ slotProps.row.model }}
-      </q-td>
+      {{ slotProps.row.model }}
     </template>
     <template #body-cell-plugged="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        <ChargePointStateIcon :vehicle-id="slotProps.row.id" />
-      </q-td>
+      <ChargePointStateIcon :vehicle-id="slotProps.row.id" />
     </template>
     <template #body-cell-vehicleSocValue="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        {{ slotProps.row.vehicleSocValue }}
-      </q-td>
+      {{ slotProps.row.vehicleSocValue }}
     </template>
   </BaseTable>
 
@@ -75,17 +80,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useMqttStore } from 'src/stores/mqtt-store';
-import { Screen } from 'quasar';
 import BaseCarousel from 'src/components/BaseCarousel.vue';
 import BaseTable from 'src/components/BaseTable.vue';
 import { VehicleRow } from 'src/components/models/table-model';
 import ChargePointStateIcon from 'src/components/ChargePointStateIcon.vue';
 import VehicleConnectionStateIcon from './VehicleConnectionStateIcon.vue';
+import BaseFaultIcon from './BaseFaultIcon.vue';
 import VehicleCard from 'src/components/VehicleCard.vue';
 import { ColumnConfiguration } from 'src/components/models/table-model';
+import { useTable } from 'src/composables/useTable';
 
+const { tooltipsEnabled, compactTable, titleIfTruncated } = useTable();
 const mqttStore = useMqttStore();
-const compactTable = computed(() => Screen.lt.md);
 const modalChargeVehicleCardVisible = ref(false);
 const selectedVehicleId = ref<number | null>(null);
 const filter = ref('');
@@ -97,6 +103,9 @@ const cardViewBreakpoint = computed(
 );
 const vehicles = computed(() => mqttStore.vehicleList);
 const vehicleIds = computed(() => vehicles.value.map((vehicle) => vehicle.id));
+const faultPresent = computed(() =>
+  vehicleIds.value.some((id) => mqttStore.vehicleFaultState(id) > 0),
+);
 
 const tableRowData = computed<(id: number) => VehicleRow>(() => {
   return (id: number) => {
@@ -110,6 +119,9 @@ const tableRowData = computed<(id: number) => VehicleRow>(() => {
     const model = info?.model || 'keine Angabe';
     const soc = mqttStore.vehicleSocValue(id);
     const vehicleSocValue = soc !== undefined ? `${Math.round(soc)}%` : '–';
+    const faultState = mqttStore.vehicleFaultState(id);
+    const faultMessage = mqttStore.vehicleFaultMessage(id) ?? '';
+    const color = mqttStore.vehicleColor(id) || 'var(--q-vehicle-stroke)';
     return {
       id,
       name,
@@ -118,22 +130,35 @@ const tableRowData = computed<(id: number) => VehicleRow>(() => {
       plugState,
       chargeState,
       vehicleSocValue,
+      faultState,
+      faultMessage,
+      color,
     };
   };
 });
 
 const columnConfig: ColumnConfiguration[] = [
-  { field: 'name', label: 'Fahrzeug' },
-  { field: 'manufacturer', label: 'Hersteller' },
-  { field: 'model', label: 'Modell' },
-  { field: 'plugged', label: 'Status', align: 'center' },
-  { field: 'vehicleSocValue', label: 'Ladestand', align: 'right' },
+  { field: 'name', label: 'Fahrzeug', shrink: true },
+  { field: 'manufacturer', label: 'Hersteller', autoWidth: true },
+  { field: 'model', label: 'Modell', autoWidth: true },
+  { field: 'plugged', label: 'Status', align: 'center', autoWidth: true },
+  {
+    field: 'vehicleSocValue',
+    label: 'Ladestand',
+    align: 'right',
+    autoWidth: true,
+  },
 ];
 
 const columnConfigCompact: ColumnConfiguration[] = [
-  { field: 'name', label: 'Fahrzeug' },
-  { field: 'plugged', label: 'Status', align: 'center' },
-  { field: 'vehicleSocValue', label: 'Ladestand', align: 'right' },
+  { field: 'name', label: 'Fahrzeug', shrink: true },
+  { field: 'plugged', label: 'Status', align: 'center', autoWidth: true },
+  {
+    field: 'vehicleSocValue',
+    label: 'Ladestand',
+    align: 'right',
+    autoWidth: true,
+  },
 ];
 
 const onRowClick = (row: VehicleRow) => {
@@ -141,9 +166,3 @@ const onRowClick = (row: VehicleRow) => {
   modalChargeVehicleCardVisible.value = true;
 };
 </script>
-
-<style scoped lang="scss">
-.max-width-0 {
-  max-width: 0;
-}
-</style>

@@ -23,7 +23,7 @@
 				<path :d="upperPath!" stroke="red" />
 				<path :d="maxPricePath!" stroke="yellow" />
 			</g>
-			<g id="tooltips" />
+			<g :id="`tooltips-${id}`" />
 		</svg>
 	</figure>
 </template>
@@ -56,10 +56,13 @@ const height = 250
 const margin = { top: 0, bottom: 15, left: 20, right: 5 }
 const axisfontsize = 12
 const plotdata = computed(() => {
+	const now = new Date()
 	let valueArray: [Date, number][] = []
 	if (etData.etPriceList.size > 0) {
 		etData.etPriceList.forEach((value, date) => {
-			valueArray.push([date, value])
+			if (date >= now) {
+				valueArray.push([date, value])
+			}
 		})
 	}
 	return valueArray
@@ -164,6 +167,10 @@ const draw = computed(() => {
 	if (needsUpdate.value == true) {
 		dummy = !dummy
 	}
+	if (plotdata.value.length == 0) {
+		// console.error('No data for price chart')
+		return 'PriceChart.vue'
+	}
 	const svg = select('g#' + 'pricechart-' + props.id)
 	svg.selectAll('*').remove()
 	const bargroups = svg
@@ -221,7 +228,7 @@ const draw = computed(() => {
 	yAxis.select('.domain').attr('stroke', 'var(--color-bg)')
 	// Tooltips
 	const ttarea: Selection<SVGGElement, [Date, number], BaseType, unknown> =
-		select('g#tooltips')
+		select(`g#tooltips-${props.id}`)
 	ttarea.selectAll('*').remove()
 	const ttips = ttarea
 		.selectAll('ttip')
@@ -252,8 +259,8 @@ const draw = computed(() => {
 		)
 	tt.append('rect')
 		.attr('rx', 5)
-		.attr('width', '60')
-		.attr('height', '30')
+		.attr('width', 60)
+		.attr('height', 30)
 		.attr('fill', 'var(--color-menu)')
 	const texts = tt
 		.append('text')

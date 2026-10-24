@@ -8,7 +8,7 @@ from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, ModbusTcpClient_
 from modules.common.simcount import SimCounter
 from modules.common.utils.peak_filter import PeakFilter
-from modules.common.store import get_counter_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.deye.deye.config import DeyeCounterSetup
 from modules.devices.deye.deye.device_type import DeviceType
 from modules.common.component_type import ComponentType
@@ -27,10 +27,10 @@ class DeyeCounter(AbstractCounter):
     def initialize(self) -> None:
         self.__device_id: int = self.kwargs['device_id']
         self.client: ModbusTcpClient_ = self.kwargs['client']
-        self.store = get_counter_value_store(self.component_config.id)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.COUNTER, self.component_config.id, self.fault_state)
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="bezug")
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
         self.device_type = DeviceType(self.client.read_holding_registers(
             0, ModbusDataType.INT_16, unit=self.component_config.configuration.modbus_id))
 
@@ -58,7 +58,7 @@ class DeyeCounter(AbstractCounter):
             currents = [c / 100 for c in self.client.read_holding_registers(613, [ModbusDataType.INT_16]*3, unit=unit)]
             voltages = [v / 10 for v in self.client.read_holding_registers(644, [ModbusDataType.INT_16]*3, unit=unit)]
             powers = self.client.read_holding_registers(616, [ModbusDataType.INT_16]*3, unit=unit)
-            power = sum(powers)
+            power = self.client.read_holding_registers(625, ModbusDataType.INT_16, unit=unit)
             frequency = self.client.read_holding_registers(609, ModbusDataType.INT_16, unit=unit) / 100
 
         self.peak_filter.check_values(power)

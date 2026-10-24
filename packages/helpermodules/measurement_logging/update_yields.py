@@ -1,16 +1,14 @@
-import json
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from control import data
-from control.chargepoint.chargepoint import Chargepoint
-from control.ev.ev import Ev
-from control.pv_all import PvAll
-from control.pv import Pv
 from helpermodules import timecheck
-from helpermodules.measurement_logging.process_log import get_totals
-from helpermodules.pub import Pub
+from helpermodules.measurement_logging.process_log import (get_totals,
+                                                           load_daily_source_totals_content,
+                                                           load_monthly_source_totals_content,
+                                                           save_daily_source_totals,
+                                                           get_monthly_log)
 
 log = logging.getLogger(__name__)
 
@@ -20,131 +18,141 @@ def update_daily_yields(entries):
     """
     try:
         totals = get_totals(entries)
-        [update_module_yields(type, totals) for type in ("bat", "counter", "cp", "pv")]
+        [update_module_yields(type, totals) for type in ("bat", "consumer", "counter", "cp", "pv")]
         data.data.counter_all_data.data.set.daily_yield_home_consumption = totals["hc"]["all"]["energy_imported"]
+        return totals
     except Exception:
         log.exception("Fehler beim Veröffentlichen der Tageserträge.")
 
 
 def update_module_yields(module: str, totals: Dict) -> None:
-    try:
-        def update_imported_exported(daily_imported: float, daily_exported: float) -> None:
-            module_data.data.get.daily_imported = daily_imported
-            module_data.data.get.daily_exported = daily_exported
-            if module == "cp":
-                topic = "chargepoint"
-            else:
-                topic = module
-            if isinstance(module_data, (Ev, Pv, Chargepoint)):
-                Pub().pub(f"openWB/set/{topic}/{module_data.num}/get/daily_imported", daily_imported)
-                Pub().pub(f"openWB/set/{topic}/{module_data.num}/get/daily_exported", daily_exported)
-            elif isinstance(module_data, PvAll):
-                # wird im changed_values_handler an den Broker gesendet
-                Pub().pub(f"openWB/set/{topic}/get/daily_imported", daily_imported)
-                Pub().pub(f"openWB/set/{topic}/get/daily_exported", daily_exported)
-    except Exception:
-        log.exception(f"Fehler beim Veröffentlichen der Tageserträge für {module}")
-
-    def update_exported(daily_exported: float) -> None:
-        module_data.data.get.daily_exported = daily_exported
-        if module in m:
-            Pub().pub(f"openWB/set/pv/{module_data.num}/get/daily_exported", daily_exported)
-        else:
-            Pub().pub("openWB/set/pv/get/daily_exported", daily_exported)
-
     for m in totals[module]:
-        if m in getattr(data.data, f"{module}_data") or m == "all":
-            if m == "all":
-                module_data = getattr(data.data, f"{module}_all_data")
+        try:
+            if m in getattr(data.data, f"{module}_data") or m == "all":
+                if m == "all":
+                    module_data = getattr(data.data, f"{module}_all_data")
+                else:
+                    module_data = getattr(data.data, f"{module}_data")[m]
+                if module == "pv":
+                    module_data.data.get.daily_exported = totals[module][m]["energy_exported"]
+                else:
+                    module_data.data.get.daily_imported = totals[module][m]["energy_imported"]
+                    module_data.data.get.daily_exported = totals[module][m]["energy_exported"]
             else:
-                module_data = getattr(data.data, f"{module}_data")[m]
-            if module == "pv":
-                update_exported(totals[module][m]["energy_exported"])
-            else:
-                update_imported_exported(totals[module][m]["energy_imported"], totals[module][m]["energy_exported"])
+                log.info(f"Modul {m} wurde zwischenzeitlich gelöscht und wird daher nicht mehr aufgeführt.")
+        except Exception:
+            log.exception(f"Fehler beim Aktualisieren der Tageserträge für Modul {m} vom Typ {module}.")
+
+
+def update_pv_monthly_yearly_yields(daily_totals: Dict) -> None:
+    """
+    veröffentlicht die monatlichen und jährlichen Erträge für PV
+    """
+    # pv_data und pv_all_data werden nur aktualisiert, wenn das Update der Logfiles abgeschlossen ist.
+    if not data.data.system_data["system"].data.get("log_data_ready", False):
+        log.debug("Update der Logfiles läuft noch. Monatliche und jährliche PV-Erträge werden nicht aktualisiert.")
+        return
+
+    monthly_totals = _get_pv_monthly_yields(daily_totals)
+    yearly_totals = _get_pv_yearly_yields(monthly_totals)
+
+    pv_all_monthly_yield = 0
+    pv_all_yearly_yield = 0
+
+    for pv_key, pv_module in data.data.pv_data.items():
+        if pv_key == "all" or not hasattr(pv_module, "num"):
+            continue
+
+        # Was wurde im Monat/Jahr exportiert
+        monthly_yield = monthly_totals.get(f"pv{pv_module.num}", {}).get("energy_exported", 0)
+        yearly_yield = yearly_totals.get(f"pv{pv_module.num}", {}).get("energy_exported", 0)
+
+        data.data.pv_data[f"pv{pv_module.num}"].data.get.monthly_exported = monthly_yield
+        data.data.pv_data[f"pv{pv_module.num}"].data.get.yearly_exported = yearly_yield
+
+        # Summe über alle Module für pv_all
+        pv_all_monthly_yield += monthly_yield
+        pv_all_yearly_yield += yearly_yield
+
+    data.data.pv_all_data.data.get.monthly_exported = pv_all_monthly_yield
+    data.data.pv_all_data.data.get.yearly_exported = pv_all_yearly_yield
+
+
+def _get_pv_monthly_yields(daily_totals: Dict) -> Dict:
+    """
+    Berechnet den Unterschied zwischen dem Zählerstand vom ersten Tag des aktuellen Monats bis zum aktuellen Tag.
+    """
+
+    this_month = timecheck.create_timestamp_YYYYMM()
+    today = timecheck.create_timestamp_YYYYMMDD()
+
+    pv_totals = {}
+
+    daily_log_path = _get_parent_path()/"data"/"daily_log"
+
+    for logfile in sorted(daily_log_path.glob(f"{this_month}*.json")):
+        day = logfile.stem
+        totals = {}
+        if day == today:
+            continue  # Der aktuelle Tag wird später behandelt
         else:
-            log.info(f"Modul {m} wurde zwischenzeitlich gelöscht und wird daher nicht mehr aufgeführt.")
+            # Lade alle vergangenen Tage des Monats aus dem daily_totals-Logfile, um die Tageserträge zu ermitteln
+            content = load_daily_source_totals_content(day)
+            if content is None:
+                # Fallback/Migration: fehlende Tages-Totals aus den Tageslogs berechnen und speichern.
+                content = save_daily_source_totals(day, saving=True)
+            if isinstance(content, dict):
+                totals = content.get("totals", {})
+
+        # Totals aufsummieren
+        _add_pv_totals(pv_totals, totals.get("pv", {}))
+
+    # aktueller Tag ergänzen
+    _add_pv_totals(pv_totals, daily_totals.get("pv", {}))
+
+    return pv_totals
 
 
-def update_pv_monthly_yearly_yields():
-    """ veröffentlicht die monatlichen und jährlichen Erträge für PV
+def _get_pv_yearly_yields(current_monthly_totals: Dict) -> Dict:
     """
-    _update_pv_monthly_yields()
-    _update_pv_yearly_yields()
-
-
-def _update_pv_monthly_yields():
-    """ veröffentlicht die monatlichen Erträge für PV
-    für pv_all nicht die Differenz aus den Logs nehmen, sondern die Summe der Module. Wenn im laufenden Monat ein Modul
-    gelöscht wurde und keins oder eines mit niedrigerem Zählerstand hinzugefügt wird, wird sonst ein negativer Wert
-    ermittelt.
+    Berechnet den Unterschied zwischen dem Zählerstand vom ersten Monat des aktuellen Jahres bis zum aktuellen Monat.
     """
-    try:
-        pv_all_monthly_yield = 0
-        with open(f"data/monthly_log/{timecheck.create_timestamp_YYYYMM()}.json", "r") as f:
-            monthly_log = json.load(f)
-        for pv_module in data.data.pv_data.values():
-            for entry in monthly_log["entries"]:
-                if entry["pv"].get(f"pv{pv_module.num}"):
-                    monthly_yield = data.data.pv_data[f"pv{pv_module.num}"].data.get.exported - \
-                        entry["pv"][f"pv{pv_module.num}"]["exported"]
-                    pv_all_monthly_yield += monthly_yield
-                    Pub().pub(f"openWB/set/pv/{pv_module.num}/get/monthly_exported", monthly_yield)
-                    break
-        Pub().pub("openWB/set/pv/get/monthly_exported", pv_all_monthly_yield)
-    except FileNotFoundError:
-        # am Tag der Ersteinrichtung gibt es noch kein Monatslog-File, das wird erst um Mitternacht erstellt.
-        log.debug("No monthly logfile found for calculation of monthly yield")
-    except Exception:
-        log.exception("Fehler beim Veröffentlichen der monatlichen Erträge für PV")
+    this_year = timecheck.create_timestamp_YYYY()
+    this_month = timecheck.create_timestamp_YYYYMM()
 
+    pv_totals = {}
 
-def pub_yearly_module_yield(sorted_path_list: List[str], pv_module: Pv):
-    for path in sorted_path_list:
-        with open(path, "r") as f:
-            monthly_log = json.load(f)
-        for entry in monthly_log["entries"]:
-            # erster Eintrag mit PV im Jahr,falls WR erst im laufenden Jahr hinzugefügt wurden
-            if entry["pv"].get(f"pv{pv_module.num}"):
-                yearly_yield = data.data.pv_data[f"pv{pv_module.num}"].data.get.exported - \
-                    entry["pv"][f"pv{pv_module.num}"]["exported"]
-                Pub().pub(f"openWB/set/pv/{pv_module.num}/get/yearly_exported", yearly_yield)
-                return
+    month = f"{this_year}01"
+    while month < this_month:
+        totals = {}
+        content = load_monthly_source_totals_content(month)
+        if content is None:
+            # Fallback/Migration: fehlende Monats-Totals berechnen und speichern.
+            content = get_monthly_log(month)
+        if isinstance(content, dict):
+            totals = content.get("totals", {})
 
+        # Totals aufsummieren
+        _add_pv_totals(pv_totals, totals.get("pv", {}))
+        month = timecheck.get_relative_date_string(month, month_offset=1)
 
-def _update_pv_yearly_yields():
-    """ veröffentlicht die jährlichen Erträge für PV
-    für pv_all nicht die Differenz aus den Logs nehmen, sondern die Summe der Module. Wenn unterjährig ein Modul
-    gelöscht wurde und keins oder eines mit niedrigerem Zählerstand hinzugefügt wird, wird sonst ein negativer Wert
-    ermittelt.
-    """
-    try:
-        pv_all_yearly_yield = 0
-        path_list = list(Path(_get_parent_path()/"data"/"monthly_log").glob(f"{timecheck.create_timestamp_YYYY()}*"))
-        sorted_path_list = sorted([str(p) for p in path_list])
-        for pv_module in data.data.pv_data.values():
-            found_pv = False
-            for path in sorted_path_list:
-                with open(path, "r") as f:
-                    monthly_log = json.load(f)
-                for entry in monthly_log["entries"]:
-                    # erster Eintrag mit PV im Jahr, falls WR erst im laufenden Jahr hinzugefügt wurden
-                    if entry["pv"].get(f"pv{pv_module.num}"):
-                        yearly_yield = data.data.pv_data[f"pv{pv_module.num}"].data.get.exported - \
-                            entry["pv"][f"pv{pv_module.num}"]["exported"]
-                        pv_all_yearly_yield += yearly_yield
-                        Pub().pub(f"openWB/set/pv/{pv_module.num}/get/yearly_exported", yearly_yield)
-                        found_pv = True
-                        break
-                if found_pv:
-                    break
-            else:
-                # am Tag der Ersteinrichtung gibt es noch kein Monatslog-File, das wird erst um Mitternacht erstellt.
-                log.debug("No monthly logfile found for calculation of yearly yield")
-        Pub().pub("openWB/set/pv/get/yearly_exported", pv_all_yearly_yield)
-    except Exception:
-        log.exception("Fehler beim Veröffentlichen der jährlichen Erträge für PV")
+    # aktueller Monat ergänzen
+    _add_pv_totals(pv_totals, current_monthly_totals)
+
+    return pv_totals
 
 
 def _get_parent_path() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _add_pv_totals(target: Dict, source: Dict) -> None:
+    for pv_key, values in source.items():
+        energy_exported = values.get("energy_exported", 0)
+
+        # Wenn das PV-Modul noch nicht im target ist, initialisiere es mit 0
+        if pv_key not in target:
+            target[pv_key] = {"energy_exported": 0}
+
+        # Addiere die energy_exported Werte für das PV-Modul
+        target[pv_key]["energy_exported"] += energy_exported

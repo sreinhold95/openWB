@@ -11,8 +11,8 @@
   <SliderStandard
     v-if="dcChargingEnabled"
     title="DC-Sollleistung"
-    :min="4"
-    :max="300"
+    :min="dcMinPower"
+    :max="dcMaxPower"
     unit="kW"
     v-model="instantChargeCurrentDc.value"
     class="q-mt-sm"
@@ -21,12 +21,13 @@
   <div v-if="acChargingEnabled">
     <div class="text-subtitle2 q-mt-sm q-mr-sm">Anzahl Phasen</div>
     <div class="row items-center justify-center q-ma-none q-pa-none no-wrap">
-      <q-btn-group class="col">
+      <q-btn-group class="col" outline>
         <q-btn
           v-for="option in phaseOptions"
           :key="option.value"
           :color="numPhases.value === option.value ? 'primary' : 'grey'"
           :label="option.label"
+          :outline="numPhases.value !== option.value"
           size="sm"
           class="col"
           @click="numPhases.value = option.value"
@@ -65,6 +66,14 @@ const dcChargingEnabled = computed(
 const acChargingEnabled = computed(
   () => mqttStore.chargePointChargeType(props.chargePointId).value === 'AC',
 );
+
+const DC_POWER_FALLBACK = 300; // entspricht dc_max_current-Default 435 A
+
+const dcMaxPower = computed(
+() => mqttStore.chargePointDcMaxPower(props.chargePointId).value ?? DC_POWER_FALLBACK,
+);
+
+const dcMinPower = computed(() => -dcMaxPower.value);
 
 const instantChargeCurrentDc = computed(() => {
   return mqttStore.chargePointConnectedVehicleInstantDcChargePower(

@@ -1,13 +1,15 @@
 from dataclasses import dataclass, field
 from threading import Event
 from typing import Dict, List, Optional, Protocol
+from control.chargemode import Chargemode
+from control.chargepoint.chargepoint_state import ChargepointState
 from control.chargepoint.chargepoint_template import CpTemplate
 
 from control.chargepoint.control_parameter import ControlParameter, control_parameter_factory
 from control.ev.charge_template import ChargeTemplate
 from control.ev.ev import Ev
 from dataclass_utils.factories import currents_list_factory, empty_dict_factory, voltages_list_factory
-from helpermodules.constants import NO_ERROR
+from helpermodules.constants import DEFAULT_COLORS, NO_ERROR
 from modules.chargepoints.openwb_pro.chargepoint_module import EvseSignaling
 from modules.common.abstract_chargepoint import AbstractChargepoint
 
@@ -38,7 +40,7 @@ class ConnectedInfo:
 class ConnectedConfig:
     average_consumption: float = 17
     charge_template: int = 0
-    chargemode: str = "stop"
+    chargemode: Chargemode = Chargemode.STOP
     current_plan: Optional[int] = 0
     ev_template: int = 0
     priority: bool = False
@@ -113,9 +115,10 @@ class Get:
     current_branch: Optional[str] = None
     current_commit: Optional[str] = None
     currents: List[float] = field(default_factory=currents_list_factory)
-    daily_imported: float = 0
-    daily_exported: float = 0
-    error_timestamp: int = 0
+    daily_imported: float = field(default=0, metadata={"topic": "get/daily_imported"})
+    daily_exported: float = field(default=0, metadata={"topic": "get/daily_exported"})
+    error_code: Optional[int] = None
+    error_timestamp: Optional[int] = None
     evse_current: Optional[float] = None
     # kann auch zur Laufzeit geändert werden
     evse_signaling: Optional[EvseSignaling] = None
@@ -135,7 +138,7 @@ class Get:
     serial_number: Optional[str] = None
     soc: Optional[float] = None
     soc_timestamp: Optional[int] = None
-    state_str: Optional[str] = None
+    state_str: Optional[str] = field(default=None, metadata={"topic": "get/state_str"})
     vehicle_id: Optional[str] = None
     version: Optional[str] = None
     voltages: List[float] = field(default_factory=voltages_list_factory)
@@ -172,13 +175,26 @@ class Set:
     charging_ev_data: Ev = field(default_factory=ev_factory)
     ocpp_transaction_id: Optional[int] = field(default=None, metadata={"topic": "set/ocpp_transaction_id"})
     charge_state_prev: bool = field(default=False, metadata={"topic": "set/charge_state_prev"})
+    # control_parameter.state aus dem vorherigen Zyklus, um eine Control-Pilot-Unterbrechung beim
+    # Ladestart von einer, die direkt nach einer echten Phasenumschaltung erfolgt, zu unterscheiden
+    # (siehe initiate_control_pilot_interruption()).
+    state_prev: ChargepointState = field(default=ChargepointState.NO_CHARGING_ALLOWED,
+                                         metadata={"topic": "set/state_prev"})
+    # letzter CP-SoC-Timestamp, für den bereits ein force_soc_update ausgelöst wurde, und das zugehörige EV,
+    # um bei dauerhaft veraltetem EV-SoC (zB API-Fehler) nicht jeden Zyklus erneut ein Update anzustoßen,
+    # aber bei einem EV-Wechsel am selben Ladepunkt trotzdem einmal neu auszulösen
+    soc_timestamp_force_update_prev: Optional[int] = field(
+        default=None, metadata={"topic": "set/soc_timestamp_force_update_prev"})
+    soc_timestamp_force_update_prev_ev: Optional[int] = field(
+        default=None, metadata={"topic": "set/soc_timestamp_force_update_prev_ev"})
 
 
 @dataclass
 class Config:
     configuration: Dict = field(default_factory=empty_dict_factory)
-    ev: int = 0
+    _ev: int = 0
     name: str = "neuer Ladepunkt"
+    color: str = DEFAULT_COLORS.CHARGEPOINT.value
     type: Optional[str] = None
     template: int = 0
     connected_phases: int = 3

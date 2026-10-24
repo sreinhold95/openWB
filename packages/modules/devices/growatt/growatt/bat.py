@@ -7,7 +7,7 @@ from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, ModbusTcpClient_
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.growatt.growatt.config import GrowattBatSetup
 from modules.devices.growatt.growatt.version import GrowattVersion
 from modules.common.component_type import ComponentType
@@ -28,35 +28,50 @@ class GrowattBat(AbstractBat):
         self.__modbus_id: int = self.kwargs['modbus_id']
         self.version: GrowattVersion = self.kwargs['version']
         self.client: ModbusTcpClient_ = self.kwargs['client']
-        self.store = get_bat_value_store(self.component_config.id)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
 
     def update(self) -> None:
-        if self.version == GrowattVersion.max_series:
-            power_in = self.client.read_input_registers(
-                1011, ModbusDataType.UINT_32, unit=self.__modbus_id) * 0.1
-            power_out = self.client.read_input_registers(
-                1009, ModbusDataType.UINT_32, unit=self.__modbus_id) * -0.1
+        if self.version == GrowattVersion.vpp:
+            # Quelle: Growatt VPP Protocol V2.03, Input 31200/31201 (int32, 0.1W).
+            # Dort gilt: positiv = Laden -> für openWB-Konvention invertieren.
+            power = self.client.read_input_registers(31200, ModbusDataType.INT_32,
+                                                     unit=self.__modbus_id) * -0.1
+            soc = self.client.read_input_registers(31217, ModbusDataType.UINT_16,
+                                                   unit=self.__modbus_id)
+            imported = self.client.read_input_registers(31204, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
+            exported = self.client.read_input_registers(31208, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
+
+        elif self.version == GrowattVersion.sph:
+            # Quelle: Protocol II V1.39, Storage-Block Input 1000-1249 (SPH/SPA-Hybrid).
+            power_in = self.client.read_input_registers(1011, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 0.1  # Pcharge1
+            power_out = self.client.read_input_registers(1009, ModbusDataType.UINT_32,
+                                                         unit=self.__modbus_id) * -0.1   # Pdischarge1
             power = power_in + power_out
 
             soc = self.client.read_input_registers(1014, ModbusDataType.UINT_16, unit=self.__modbus_id)
-            imported = self.client.read_input_registers(
-                1058, ModbusDataType.UINT_32, unit=self.__modbus_id) * 100
-            exported = self.client.read_input_registers(
-                1054, ModbusDataType.UINT_32, unit=self.__modbus_id) * 100
-        else:
-            power_in = self.client.read_input_registers(
-                3180, ModbusDataType.UINT_32, unit=self.__modbus_id) * -0.1
-            power_out = self.client.read_input_registers(
-                3178, ModbusDataType.UINT_32, unit=self.__modbus_id) * 0.1
+            imported = self.client.read_input_registers(1058, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
+            exported = self.client.read_input_registers(1054, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
+
+        else:  # GrowattVersion.tlx
+            # Quelle: Protocol II V1.39, BDC1-Block Input 3160-3233 (TL-X/TL-XH/TL3-XH inkl. MOD-XH+APX).
+            power_in = self.client.read_input_registers(3180, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 0.1  # Pchr
+            power_out = self.client.read_input_registers(3178, ModbusDataType.UINT_32,
+                                                         unit=self.__modbus_id) * -0.1   # Pdischr
             power = power_in + power_out
 
             soc = self.client.read_input_registers(3171, ModbusDataType.UINT_16, unit=self.__modbus_id)
-            imported = self.client.read_input_registers(
-                3131, ModbusDataType.UINT_32, unit=self.__modbus_id) * 100
-            exported = self.client.read_input_registers(
-                3127, ModbusDataType.UINT_32, unit=self.__modbus_id) * 100
+            imported = self.client.read_input_registers(3131, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
+            exported = self.client.read_input_registers(3127, ModbusDataType.UINT_32,
+                                                        unit=self.__modbus_id) * 100
 
         imported, exported = self.peak_filter.check_values(power, imported, exported)
         bat_state = BatState(

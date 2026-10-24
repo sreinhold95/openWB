@@ -1,10 +1,23 @@
 <script setup lang="ts">
 import { useMqttStore } from 'src/stores/mqtt-store';
+import { useQuasar } from 'quasar';
 import { ref, computed, watch } from 'vue';
 import type { SvgSize, FlowComponent } from './energy-flow-chart-models';
 import type { ValueObject } from 'src/stores/mqtt-store-model';
+import BatteryIcon from 'src/assets/icons/owbBattery_2.svg?component';
+import GridIcon from 'src/assets/icons/owbGrid.svg?component';
+import PvIcon from 'src/assets/icons/owbPV.svg?component';
+import HouseIcon from 'src/assets/icons/owbHouse.svg?component';
+import VehicleIcon from 'src/assets/icons/owbVehicle.svg?component';
+import ChargePointIcon from 'src/assets/icons/owbChargePoint_2.svg?component';
+import ConsumerIcon from 'src/assets/icons/owbConsumer.svg?component';
+import CounterIcon from 'src/assets/icons/owbCounter.svg?component';
+import InfoIcon from 'src/assets/icons/owbInformation.svg?component';
+import MiscDevicesIcon from 'src/assets/icons/owbMiscDevices.svg?component';
+import HomeConsumptionDetailsDialog from './HomeConsumptionDetailsDialog.vue';
 
 const mqttStore = useMqttStore();
+const $q = useQuasar();
 
 const svgSize = ref<SvgSize>({
   xMin: 0,
@@ -18,12 +31,35 @@ const svgSize = ref<SvgSize>({
   numColumns: 3,
 });
 
+const BASE_CHART_WIDTH = 150;
+const chartWidth = computed(() => {
+  if ($q.screen.gt.md) return 170;
+  if ($q.screen.gt.sm) return 160;
+  return BASE_CHART_WIDTH;
+});
+
+watch(
+  chartWidth,
+  (newValue) => {
+    svgSize.value.xMax = newValue;
+  },
+  { immediate: true },
+);
+
 const svgViewBox = computed(
   () =>
     `${svgSize.value.xMin} ${svgSize.value.yMin} ${svgSize.value.xMax} ${svgSize.value.yMax}`,
 );
 
-const svgStrokeWidth = computed(() => svgSize.value.strokeWidth);
+// The icon circle sits inside the label pill (pill radius = circleRadius);
+// the inset leaves a visible gap between circle and pill edge.
+const iconCircleRadius = computed(() => svgSize.value.circleRadius - 2);
+
+const infoBadgeRadius = 3.2;
+const infoIconSize = 6;
+const infoBadgeOffset = computed(
+  () => (iconCircleRadius.value + 1) * Math.SQRT1_2,
+);
 
 const svgIconWidth = computed(() => svgSize.value.circleRadius);
 
@@ -49,7 +85,7 @@ const absoluteValueObject = (valueObject: ValueObject): ValueObject => {
 };
 
 const gridPower = computed(
-  () => mqttStore.getCounterPower('object') as ValueObject,
+  () => mqttStore.counterPower('object') as ValueObject,
 );
 const showGridPower = computed(() => {
   return gridPower.value.value !== undefined;
@@ -69,16 +105,91 @@ const batteryCharging = computed(
 
 const batterySoc = computed(() => Number(mqttStore.batterySocTotal) / 100);
 
-const homePower = computed(
-  () => mqttStore.getHomePower('object') as ValueObject,
-);
+const homePower = computed(() => mqttStore.homePower('object') as ValueObject);
 const showHomePower = computed(() => {
   return homePower.value.value !== undefined;
 });
 const homeConsumption = computed(() => Number(homePower.value.value) > 0);
 const homeProduction = computed(() => Number(homePower.value.value) < 0);
 
-const pvPower = computed(() => mqttStore.getPvPower('object') as ValueObject);
+const consumerPower = computed(
+  () => mqttStore.notInHomeConsumptionPower('object') as ValueObject,
+);
+const consumerConsumption = computed(
+  () => Number(consumerPower.value.value) > 0,
+);
+const consumerProduction = computed(
+  () => Number(consumerPower.value.value) < 0,
+);
+const countersNotInHome = computed(
+  () => mqttStore.notInHomeConsumption.counterIds.length > 0,
+);
+const notInHomeVariants = {
+  consumer: {
+    label: 'Verbraucher',
+    class: 'consumer',
+    iconComponent: ConsumerIcon,
+    iconColor: 'var(--q-consumer)',
+  },
+  counter: {
+    label: 'Zähler',
+    class: 'not-in-home',
+    iconComponent: CounterIcon,
+    iconColor: 'var(--q-secondary-counter-stroke)',
+  },
+  mixed: {
+    label: 'Sonstiges',
+    class: 'not-in-home',
+    iconComponent: MiscDevicesIcon,
+    iconColor: 'var(--q-secondary-counter-stroke)',
+  },
+};
+// follows the counters listed in the details: if all of them are hidden, the
+// node only shows consumers
+const notInHomeVariant = computed(() => {
+  if (mqttStore.shownCounterIds.notInHome.length === 0) {
+    return notInHomeVariants.consumer;
+  }
+  return mqttStore.notInHomeConsumption.consumerIds.length > 0
+    ? notInHomeVariants.mixed
+    : notInHomeVariants.counter;
+});
+const detailsVisible = ref(false);
+const detailsScope = ref<'inHome' | 'notInHome'>('inHome');
+const detailsTitle = computed(() =>
+  detailsScope.value === 'inHome'
+    ? 'Im Hausverbrauch enthalten:'
+    : notInHomeVariant.value.label,
+);
+
+const openDetails = (event: MouseEvent, component: FlowComponent) => {
+  if (!component.showInfo) {
+    return;
+  }
+  event.stopPropagation();
+  detailsScope.value = component.id === 'home' ? 'inHome' : 'notInHome';
+  detailsVisible.value = true;
+};
+const homeHasDetails = computed(
+  () =>
+    mqttStore.inHomeConsumption.consumerIds.length > 0 ||
+    mqttStore.shownCounterIds.inHome.length > 0,
+);
+const notInHomeHasDetails = computed(
+  () =>
+    mqttStore.notInHomeConsumption.consumerIds.length > 0 ||
+    mqttStore.shownCounterIds.notInHome.length > 0,
+);
+const showConsumerPower = computed(
+  () =>
+    mqttStore.notInHomeConsumption.consumerIds.length > 0 ||
+    countersNotInHome.value ||
+    // e.g. SmartHome devices excluded from the home consumption
+    consumerConsumption.value ||
+    consumerProduction.value,
+);
+
+const pvPower = computed(() => mqttStore.pvPowerTotal('object') as ValueObject);
 const pvProduction = computed(() => {
   const value = Number(pvPower.value.value);
   return value < 0;
@@ -162,19 +273,19 @@ const chargePoint3Discharging = computed(
 const translateChargeMode = (mode: string) => {
   switch (mode) {
     case 'instant_charging':
-      return { label: 'Sofort', class: 'danger' };
+      return { label: 'Sofort' };
     case 'pv_charging':
-      return { label: 'PV', class: 'success' };
+      return { label: 'PV' };
     case 'scheduled_charging':
-      return { label: 'Zielladen', class: 'primary' };
+      return { label: 'Zielladen' };
     case 'time_charging':
-      return { label: 'Zeitladen', class: 'warning' };
+      return { label: 'Zeitladen' };
     case 'eco_charging':
-      return { label: 'Eco', class: 'secondary' };
+      return { label: 'Eco' };
     case 'stop':
-      return { label: 'Stop', class: 'dark' };
+      return { label: 'Stop' };
     default:
-      return { label: 'Stop', class: 'dark' };
+      return { label: 'Stop' };
   }
 };
 
@@ -189,11 +300,10 @@ const chargePoint1ConnectedVehicleChargeMode = computed(() => {
   return translateChargeMode(mode.value || '');
 });
 
-const chargePoint1ConnectedVehicleName = computed(
-  () =>
-    mqttStore.chargePointConnectedVehicleInfo(connectedChargePoints.value[0])
-      .value?.name || '---',
-);
+const chargePoint1ConnectedVehicle = computed(() => {
+  const cpId = connectedChargePoints.value[0];
+  return mqttStore.chargePointConnectedVehicleInfo(cpId).value || null;
+});
 
 const chargePoint1ConnectedVehicleSoc = computed(() =>
   mqttStore.chargePointConnectedVehicleSoc(connectedChargePoints.value[0]),
@@ -213,10 +323,10 @@ const chargePoint2ConnectedVehicleChargeMode = computed(() => {
   return translateChargeMode(mode.value || '');
 });
 
-const chargePoint2ConnectedVehicleName = computed(
+const chargePoint2ConnectedVehicle = computed(
   () =>
     mqttStore.chargePointConnectedVehicleInfo(connectedChargePoints.value[1])
-      .value?.name || '---',
+      .value || null,
 );
 
 const chargePoint2ConnectedVehicleSoc = computed(() =>
@@ -237,10 +347,10 @@ const chargePoint3ConnectedVehicleChargeMode = computed(() => {
   return translateChargeMode(mode.value || '');
 });
 
-const chargePoint3ConnectedVehicleName = computed(
+const chargePoint3ConnectedVehicle = computed(
   () =>
     mqttStore.chargePointConnectedVehicleInfo(connectedChargePoints.value[2])
-      .value?.name || '---',
+      .value || null,
 );
 
 const chargePoint3ConnectedVehicleSoc = computed(() =>
@@ -264,6 +374,7 @@ const maxSystemPower = computed(() => {
   const powerValues = [
     Math.abs(Number(gridPower.value.value)),
     Math.abs(Number(homePower.value.value)),
+    Math.abs(Number(consumerPower.value.value)),
     Math.abs(Number(pvPower.value.value)),
     Math.abs(Number(batteryPower.value.value)),
     Math.abs(Number(chargePoint1Power.value.value)),
@@ -282,8 +393,8 @@ const maxSystemPower = computed(() => {
 });
 
 function calcDuration(power: number, maxPower: number) {
-  const minDuration = 0.4;
-  const maxDuration = 4.0;
+  const minDuration = 3;
+  const maxDuration = 10;
   const absPower = Math.abs(power || 0);
   if (absPower >= maxPower) return `${minDuration}s`;
   if (absPower > 0)
@@ -296,6 +407,7 @@ const animationDurations = computed(() => {
   return {
     grid: calcDuration(Number(gridPower.value.value), maxPower),
     home: calcDuration(Number(homePower.value.value), maxPower),
+    consumer: calcDuration(Number(consumerPower.value.value), maxPower),
     pv: calcDuration(Number(pvPower.value.value), maxPower),
     battery: calcDuration(Number(batteryPower.value.value), maxPower),
     chargePoint1: calcDuration(Number(chargePoint1Power.value.value), maxPower),
@@ -321,18 +433,19 @@ const svgComponents = computed((): FlowComponent[] => {
       id: 'grid',
       class: {
         base: 'grid',
-        valueLabel: gridFeedIn.value
-          ? 'fill-success'
+        valueLabelColor: gridFeedIn.value
+          ? 'var(--q-pv-stroke)'
           : gridConsumption.value
-            ? 'fill-danger'
-            : '',
+            ? 'var(--q-grid-stroke)'
+            : 'var(--q-text)',
         animated: gridConsumption.value,
         animatedReverse: gridFeedIn.value,
       },
       position: { row: 0, column: 0 },
       label: ['EVU', absoluteValueObject(gridPower.value).textValue],
       powerValue: Number(gridPower.value.value),
-      icon: 'icons/owbGrid.svg',
+      iconComponent: GridIcon,
+      iconColor: 'var(--q-grid-stroke)',
     });
   }
 
@@ -341,30 +454,51 @@ const svgComponents = computed((): FlowComponent[] => {
       id: 'home',
       class: {
         base: 'home',
-        valueLabel: '',
         animated: homeProduction.value,
         animatedReverse: homeConsumption.value,
       },
       position: { row: 0, column: 2 },
       label: ['Haus', absoluteValueObject(homePower.value).textValue],
       powerValue: Number(homePower.value.value),
-      icon: 'icons/owbHouse.svg',
+      iconComponent: HouseIcon,
+      iconColor: 'var(--q-home-stroke)',
+      showInfo: homeHasDetails.value,
     });
   }
 
-  if (mqttStore.getPvConfigured) {
+  if (showConsumerPower.value) {
+    components.push({
+      id: 'consumer',
+      class: {
+        base: notInHomeVariant.value.class,
+        animated: consumerProduction.value,
+        animatedReverse: consumerConsumption.value,
+      },
+      position: { row: 0, column: 1 },
+      label: [
+        notInHomeVariant.value.label,
+        absoluteValueObject(consumerPower.value).textValue,
+      ],
+      powerValue: Number(consumerPower.value.value),
+      iconComponent: notInHomeVariant.value.iconComponent,
+      iconColor: notInHomeVariant.value.iconColor,
+      showInfo: notInHomeHasDetails.value,
+    });
+  }
+
+  if (mqttStore.pvConfigured) {
     components.push({
       id: 'pv',
       class: {
         base: 'pv',
-        valueLabel: 'fill-success',
         animated: pvProduction.value,
         animatedReverse: pvConsumption.value,
       },
       position: { row: 1, column: 0 },
       label: ['PV', absoluteValueObject(pvPower.value).textValue],
       powerValue: Number(pvPower.value.value),
-      icon: 'icons/owbPV.svg',
+      iconComponent: PvIcon,
+      iconColor: 'var(--q-pv-stroke)',
     });
   }
 
@@ -373,7 +507,6 @@ const svgComponents = computed((): FlowComponent[] => {
       id: 'battery',
       class: {
         base: 'battery',
-        valueLabel: '',
         animated: batteryDischarging.value,
         animatedReverse: batteryCharging.value,
       },
@@ -381,7 +514,8 @@ const svgComponents = computed((): FlowComponent[] => {
       label: ['Speicher', absoluteValueObject(batteryPower.value).textValue],
       powerValue: Number(batteryPower.value.value),
       soc: batterySoc.value,
-      icon: 'icons/owbBattery.svg',
+      iconComponent: BatteryIcon,
+      iconColor: 'var(--q-battery-stroke)',
     });
   }
 
@@ -393,7 +527,6 @@ const svgComponents = computed((): FlowComponent[] => {
         class: {
           base: 'charge-point',
           animationId: 'charge-point-1',
-          valueLabel: '',
           animated: chargePoint1Discharging.value,
           animatedReverse: chargePoint1Charging.value,
         },
@@ -406,7 +539,10 @@ const svgComponents = computed((): FlowComponent[] => {
           absoluteValueObject(chargePoint1Power.value).textValue,
         ],
         powerValue: Number(chargePoint1Power.value.value),
-        icon: 'icons/owbChargePoint.svg',
+        iconComponent: ChargePointIcon,
+        iconColor:
+          mqttStore.chargePointColor(connectedChargePoints.value[0]) ||
+          'var(--q-charge-point-stroke)',
       });
 
       if (chargePoint1VehicleConnected.value) {
@@ -416,8 +552,6 @@ const svgComponents = computed((): FlowComponent[] => {
           class: {
             base: 'vehicle',
             animationId: 'vehicle-1',
-            valueLabel:
-              'fill-' + chargePoint1ConnectedVehicleChargeMode.value.class,
             animated: chargePoint1Discharging.value,
             animatedReverse: chargePoint1Charging.value,
           },
@@ -426,11 +560,15 @@ const svgComponents = computed((): FlowComponent[] => {
             column: connectedChargePoints.value.length > 1 ? 0 : 1,
           },
           label: [
-            chargePoint1ConnectedVehicleName.value || '---',
+            chargePoint1ConnectedVehicle.value?.name || '---',
             chargePoint1ConnectedVehicleChargeMode.value.label || '---',
           ],
           soc: (chargePoint1ConnectedVehicleSoc.value.value?.soc || 0) / 100,
-          icon: 'icons/owbVehicle.svg',
+          iconComponent: VehicleIcon,
+          iconColor: chargePoint1ConnectedVehicle.value?.id
+            ? mqttStore.vehicleColor(chargePoint1ConnectedVehicle.value?.id) ||
+              'var(--q-vehicle-stroke)'
+            : 'var(--q-vehicle-stroke)',
           powerValue: Number(chargePoint1Power.value.value),
         });
       }
@@ -442,7 +580,6 @@ const svgComponents = computed((): FlowComponent[] => {
           class: {
             base: 'charge-point',
             animationId: 'charge-point-2',
-            valueLabel: '',
             animated: chargePoint2Discharging.value,
             animatedReverse: chargePoint2Charging.value,
           },
@@ -455,7 +592,10 @@ const svgComponents = computed((): FlowComponent[] => {
             absoluteValueObject(chargePoint2Power.value).textValue,
           ],
           powerValue: Number(chargePoint2Power.value.value),
-          icon: 'icons/owbChargePoint.svg',
+          iconComponent: ChargePointIcon,
+          iconColor:
+            mqttStore.chargePointColor(connectedChargePoints.value[1]) ||
+            'var(--q-charge-point-stroke)',
         });
       }
 
@@ -466,8 +606,6 @@ const svgComponents = computed((): FlowComponent[] => {
           class: {
             base: 'vehicle',
             animationId: 'vehicle-2',
-            valueLabel:
-              'fill-' + chargePoint2ConnectedVehicleChargeMode.value.class,
             animated: chargePoint2Discharging.value,
             animatedReverse: chargePoint2Charging.value,
           },
@@ -476,11 +614,15 @@ const svgComponents = computed((): FlowComponent[] => {
             column: connectedChargePoints.value.length > 2 ? 1 : 2,
           },
           label: [
-            chargePoint2ConnectedVehicleName.value || '---',
+            chargePoint2ConnectedVehicle.value?.name || '---',
             chargePoint2ConnectedVehicleChargeMode.value.label || '---',
           ],
           soc: (chargePoint2ConnectedVehicleSoc.value.value?.soc || 0) / 100,
-          icon: 'icons/owbVehicle.svg',
+          iconComponent: VehicleIcon,
+          iconColor: chargePoint2ConnectedVehicle.value?.id
+            ? mqttStore.vehicleColor(chargePoint2ConnectedVehicle.value?.id) ||
+              'var(--q-vehicle-stroke)'
+            : 'var(--q-vehicle-stroke)',
           powerValue: Number(chargePoint2Power.value.value),
         });
       }
@@ -492,7 +634,6 @@ const svgComponents = computed((): FlowComponent[] => {
           class: {
             base: 'charge-point',
             animationId: 'charge-point-3',
-            valueLabel: '',
             animated: chargePoint3Discharging.value,
             animatedReverse: chargePoint3Charging.value,
           },
@@ -502,7 +643,10 @@ const svgComponents = computed((): FlowComponent[] => {
             absoluteValueObject(chargePoint3Power.value).textValue,
           ],
           powerValue: Number(chargePoint3Power.value.value),
-          icon: 'icons/owbChargePoint.svg',
+          iconComponent: ChargePointIcon,
+          iconColor:
+            mqttStore.chargePointColor(connectedChargePoints.value[2]) ||
+            'var(--q-charge-point-stroke)',
         });
       }
 
@@ -513,8 +657,6 @@ const svgComponents = computed((): FlowComponent[] => {
           class: {
             base: 'vehicle',
             animationId: 'vehicle-3',
-            valueLabel:
-              'fill-' + chargePoint3ConnectedVehicleChargeMode.value.class,
             animated: chargePoint3Discharging.value,
             animatedReverse: chargePoint3Charging.value,
           },
@@ -523,11 +665,15 @@ const svgComponents = computed((): FlowComponent[] => {
             column: 2,
           },
           label: [
-            chargePoint3ConnectedVehicleName.value || '---',
+            chargePoint3ConnectedVehicle.value?.name || '---',
             chargePoint3ConnectedVehicleChargeMode.value.label || '---',
           ],
           soc: (chargePoint3ConnectedVehicleSoc.value.value?.soc || 0) / 100,
-          icon: 'icons/owbVehicle.svg',
+          iconComponent: VehicleIcon,
+          iconColor: chargePoint3ConnectedVehicle.value?.id
+            ? mqttStore.vehicleColor(chargePoint3ConnectedVehicle.value?.id) ||
+              'var(--q-vehicle-stroke)'
+            : 'var(--q-vehicle-stroke)',
           powerValue: Number(chargePoint3Power.value.value),
         });
       }
@@ -538,7 +684,6 @@ const svgComponents = computed((): FlowComponent[] => {
         class: {
           base: 'charge-point',
           animationId: 'charge-point-sum',
-          valueLabel: '',
           animated: chargePointSumDischarging.value,
           animatedReverse: chargePointSumCharging.value,
         },
@@ -548,7 +693,8 @@ const svgComponents = computed((): FlowComponent[] => {
           absoluteValueObject(chargePointSumPower.value).textValue,
         ],
         powerValue: Number(chargePointSumPower.value.value),
-        icon: 'icons/owbChargePoint.svg',
+        iconComponent: ChargePointIcon,
+        iconColor: 'var(--q-charge-point-stroke)',
       });
     }
   }
@@ -598,6 +744,15 @@ const calcFlowLineAnchorX = (column: number): number => {
   return columnX;
 };
 
+const calcFlowPath = (component: FlowComponent): string => {
+  const x1 = calcFlowLineAnchorX(component.position.column);
+  const y1 = calcRowY(component.position.row);
+  if (component.class.base === 'vehicle') {
+    return `M ${x1}, ${y1} ${x1}, ${calcRowY(component.position.row - 1)}`;
+  }
+  return `M ${x1}, ${y1} ${calcColumnX(1)}, ${calcRowY(1)}`;
+};
+
 const calcSvgElementBoundingBox = (elementId: string) => {
   const element = document.getElementById(elementId);
   if (element == undefined || !(element instanceof SVGGraphicsElement)) {
@@ -621,12 +776,28 @@ const beginAnimation = (elementId: string) => {
 
 const svgRectWidth = computed(
   () =>
-    (svgSize.value.xMax -
+    (BASE_CHART_WIDTH -
       svgSize.value.xMin -
       svgSize.value.strokeWidth -
       svgSize.value.numColumns) /
     svgSize.value.numColumns,
 );
+
+const labelClipPath = computed(() => {
+  const cr = svgSize.value.circleRadius;
+  const iconCenter = cr - svgRectWidth.value / 2; // icon circle center x
+  const curveStart = svgRectWidth.value / 2 - cr; // where the right curve begins
+  const top = -cr;
+  const bottom = cr;
+  return (
+    `M ${iconCenter} ${top} ` +
+    `L ${curveStart} ${top} ` +
+    `A ${cr} ${cr} 0 0 1 ${curveStart} ${bottom} ` +
+    `L ${iconCenter} ${bottom} ` +
+    `A ${cr} ${cr} 0 0 0 ${iconCenter} ${top} ` +
+    'Z'
+  );
+});
 </script>
 
 <template>
@@ -637,25 +808,43 @@ const svgRectWidth = computed(
       xmlns="http://www.w3.org/2000/svg"
       xmlns:svg="http://www.w3.org/2000/svg"
     >
+      <defs>
+        <filter
+          id="flow-box-shadow"
+          x="-50%"
+          y="-50%"
+          width="200%"
+          height="200%"
+          filterUnits="objectBoundingBox"
+        >
+          <feDropShadow dx="1.3" dy="1.3" stdDeviation="1.5" />
+        </filter>
+      </defs>
+
       <g id="layer1" style="display: inline">
-        <path
-          v-for="component in svgComponents"
-          :key="component.id"
-          :id="`flow-path-${component.id}`"
-          :class="[
-            component.class.base,
-            component.class.animationId,
-            { animated: component.class.animated },
-            { animatedReverse: component.class.animatedReverse },
-          ]"
-          :d="
-            component.class.base !== 'vehicle'
-              ? `M ${calcFlowLineAnchorX(component.position.column)}, ` +
-                `${calcRowY(component.position.row)} ${calcColumnX(1)}, ${calcRowY(1)}`
-              : `M ${calcFlowLineAnchorX(component.position.column)}, ` +
-                `${calcRowY(component.position.row)} ${calcFlowLineAnchorX(component.position.column)}, ${calcRowY(component.position.row - 1)}`
-          "
-        />
+        <g v-for="component in svgComponents" :key="component.id">
+          <!-- static background line -->
+          <path
+            class="flow-base"
+            :class="{
+              animated: component.class.animated,
+              animatedReverse: component.class.animatedReverse,
+            }"
+            :d="calcFlowPath(component)"
+          />
+          <!-- glowing flow overlay -->
+          <path
+            :id="`flow-path-${component.id}`"
+            class="flow-animated"
+            :class="[
+              component.class.base,
+              component.class.animationId,
+              { animated: component.class.animated },
+              { animatedReverse: component.class.animatedReverse },
+            ]"
+            :d="calcFlowPath(component)"
+          />
+        </g>
       </g>
 
       <g id="layer2" style="display: inline">
@@ -665,6 +854,7 @@ const svgRectWidth = computed(
           :cx="calcColumnX(1)"
           :cy="calcRowY(1)"
           :r="svgSize.circleRadius / 3"
+          filter="url(#flow-box-shadow)"
         />
 
         <!-- components -->
@@ -676,31 +866,38 @@ const svgRectWidth = computed(
           @click="beginAnimation(`animate-label-${component.id}`)"
         >
           <defs>
-            <clipPath v-if="component.soc" :id="`clip-soc-${component.id}`">
+            <clipPath
+              v-if="component.soc !== undefined"
+              :id="`clip-soc-${component.id}`"
+            >
               <rect
                 :x="-svgSize.circleRadius - svgSize.strokeWidth"
-                :y="
-                  (svgSize.circleRadius + svgSize.strokeWidth) *
-                  (1 - 2 * component.soc)
-                "
+                :y="iconCircleRadius * (1 - 2 * component.soc)"
                 :width="(svgSize.circleRadius + svgSize.strokeWidth) * 2"
-                :height="
-                  (svgSize.circleRadius + svgSize.strokeWidth) *
-                  2 *
-                  component.soc
-                "
+                :height="iconCircleRadius * 2 * component.soc"
               />
             </clipPath>
             <clipPath :id="`clip-label-${component.id}`">
-              <rect
-                :x="-svgRectWidth / 2"
-                :y="-svgSize.circleRadius"
-                :width="svgRectWidth"
-                :height="svgSize.circleRadius * 2"
-                :rx="svgSize.circleRadius"
-                :ry="svgSize.circleRadius"
-              />
+              <path :d="labelClipPath" />
             </clipPath>
+            <linearGradient
+              :id="`gradient-soc-${component.id}`"
+              x1="0%"
+              y1="0%"
+              x2="0%"
+              y2="100%"
+            >
+              <stop
+                offset="0%"
+                stop-color="var(--soc-color)"
+                stop-opacity="25%"
+              />
+              <stop
+                offset="100%"
+                stop-color="var(--soc-color)"
+                stop-opacity="50%"
+              />
+            </linearGradient>
           </defs>
           <rect
             :x="-svgRectWidth / 2"
@@ -709,6 +906,7 @@ const svgRectWidth = computed(
             :height="svgSize.circleRadius * 2"
             :rx="svgSize.circleRadius"
             :ry="svgSize.circleRadius"
+            filter="url(#flow-box-shadow)"
           />
           <text :clip-path="`url(#clip-label-${component.id})`">
             <tspan
@@ -747,7 +945,9 @@ const svgRectWidth = computed(
             </tspan>
             <tspan
               :id="`value-${component.id}`"
-              :class="component.class.valueLabel"
+              :style="{
+                fill: component.class.valueLabelColor ?? component.iconColor,
+              }"
               text-anchor="end"
               :x="2 * svgSize.circleRadius + svgSize.strokeWidth"
               :y="svgSize.textSize"
@@ -757,38 +957,68 @@ const svgRectWidth = computed(
           </text>
           <g
             :transform="`translate(${svgSize.circleRadius - svgRectWidth / 2}, 0)`"
+            :class="{ 'cursor-pointer': component.showInfo }"
+            @click="openDetails($event, component)"
           >
             <circle
               cx="0"
               cy="0"
-              :r="svgSize.circleRadius"
-              class="background-circle"
+              :r="iconCircleRadius"
+              filter="url(#flow-box-shadow)"
             />
+            <!-- SoC fill: radius must match the clip-soc reference above so the
+                 fill level is accurate, and the background circle below so it
+                 reaches the inner edge of the border instead of leaving a rim -->
             <circle
+              v-if="component.soc !== undefined"
+              :class="{ soc: component.soc !== undefined }"
               cx="0"
               cy="0"
-              :r="svgSize.circleRadius"
-              :class="{ soc: component.soc }"
-            />
-            <circle
-              v-if="component.soc"
-              cx="0"
-              cy="0"
-              :r="svgSize.circleRadius"
+              :r="iconCircleRadius"
               :clip-path="`url(#clip-soc-${component.id})`"
+              :fill="`url(#gradient-soc-${component.id})`"
             />
-
-            <image
-              :href="component.icon"
-              :x="-svgIconWidth / 2"
-              :y="-svgIconHeight / 2"
-              :height="svgIconHeight"
-              :width="svgIconWidth"
-            />
+            <g
+              :transform="`translate(${-svgIconWidth / 2}, ${-svgIconHeight / 2})`"
+            >
+              <component
+                :is="component.iconComponent"
+                :width="svgIconWidth"
+                :height="svgIconHeight"
+                :style="{ color: component.iconColor }"
+              />
+            </g>
+            <!-- info badge: sits on the top left edge of the icon circle -->
+            <g
+              v-if="component.showInfo"
+              class="info-badge"
+              :transform="`translate(${-infoBadgeOffset}, ${-infoBadgeOffset})`"
+            >
+              <circle
+                cx="0"
+                cy="0"
+                :r="infoBadgeRadius"
+                filter="url(#flow-box-shadow)"
+              />
+              <g
+                :transform="`translate(${-infoIconSize / 2}, ${-infoIconSize / 2})`"
+              >
+                <InfoIcon
+                  class="info-icon"
+                  :width="infoIconSize"
+                  :height="infoIconSize"
+                />
+              </g>
+            </g>
           </g>
         </g>
       </g>
     </svg>
+    <HomeConsumptionDetailsDialog
+      v-model="detailsVisible"
+      :scope="detailsScope"
+      :title="detailsTitle"
+    />
   </div>
 </template>
 
@@ -808,257 +1038,178 @@ svg {
   object-fit: contain;
 }
 
-path {
+.flow-base {
   fill: none;
-  fill-rule: evenodd;
-  stroke: rgb(64, 64, 64);
-  stroke-width: 0.75;
-  stroke-linecap: butt;
-  stroke-linejoin: miter;
-  stroke-miterlimit: 4;
+  stroke: var(--q-secondary);
+  stroke-width: 0.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   transition: stroke 0.5s;
 }
 
-/* Basis for all animated lines */
-path.animated {
-  animation-name: dash;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-  stroke-dasharray: 5;
+/* slightly darker solid line beneath an active flow */
+.flow-base.animated,
+.flow-base.animatedReverse {
+  stroke: var(--q-grey);
 }
-path.animatedReverse {
-  animation-name: dashReverse;
+
+/* overlay stays hidden until energy is flowing */
+.flow-animated {
+  fill: none;
+  stroke: none;
+}
+
+/* Animated energy flow: glowing dots traveling along the line */
+.flow-animated.animated,
+.flow-animated.animatedReverse {
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-dasharray: 2 50;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
-  stroke-dasharray: 5;
+  filter: drop-shadow(0 0 2px currentColor) drop-shadow(0 0 6px currentColor);
+}
+
+.flow-animated.animated {
+  animation-name: energyFlow;
+}
+.flow-animated.animatedReverse {
+  animation-name: energyFlowReverse;
 }
 
 path.animated.grid {
-  stroke: var(--q-negative);
+  color: var(--q-negative);
   animation-duration: v-bind('animationDurations.grid');
 }
 path.animatedReverse.grid {
-  stroke: var(--q-positive);
+  color: var(--q-pv-stroke);
   animation-duration: v-bind('animationDurations.grid');
 }
 
 path.animated.home,
 path.animatedReverse.home {
-  stroke: var(--q-home-stroke);
+  color: var(--q-home-stroke);
   animation-duration: v-bind('animationDurations.home');
+}
+
+path.animated.consumer,
+path.animatedReverse.consumer {
+  color: var(--q-consumer);
+  animation-duration: v-bind('animationDurations.consumer');
+}
+
+path.animated.not-in-home,
+path.animatedReverse.not-in-home {
+  color: var(--q-secondary-counter-stroke);
+  animation-duration: v-bind('animationDurations.consumer');
 }
 
 path.animated.pv,
 path.animatedReverse.pv {
-  stroke: var(--q-positive);
+  color: var(--q-pv-stroke);
   animation-duration: v-bind('animationDurations.pv');
 }
 
 path.animated.battery,
 path.animatedReverse.battery {
-  stroke: var(--q-battery-stroke);
+  color: var(--q-battery-stroke);
   animation-duration: v-bind('animationDurations.battery');
 }
 
 path.animated.charge-point-1,
 path.animatedReverse.charge-point-1 {
-  stroke: var(--q-charge-point-stroke);
+  color: var(--q-charge-point-stroke);
   animation-duration: v-bind('animationDurations.chargePoint1');
 }
 path.animated.charge-point-2,
 path.animatedReverse.charge-point-2 {
-  stroke: var(--q-charge-point-stroke);
+  color: var(--q-charge-point-stroke);
   animation-duration: v-bind('animationDurations.chargePoint2');
 }
 path.animated.charge-point-3,
 path.animatedReverse.charge-point-3 {
-  stroke: var(--q-charge-point-stroke);
+  color: var(--q-charge-point-stroke);
   animation-duration: v-bind('animationDurations.chargePoint3');
 }
 path.animated.charge-point-sum,
 path.animatedReverse.charge-point-sum {
-  stroke: var(--q-charge-point-stroke);
+  color: var(--q-charge-point-stroke);
   animation-duration: v-bind('animationDurations.chargePointSum');
 }
 
 path.animated.vehicle-1,
 path.animatedReverse.vehicle-1 {
-  stroke: var(--q-accent);
+  color: var(--q-vehicle-stroke);
   animation-duration: v-bind('animationDurations.vehicle1');
 }
 path.animated.vehicle-2,
 path.animatedReverse.vehicle-2 {
-  stroke: var(--q-accent);
+  color: var(--q-vehicle-stroke);
   animation-duration: v-bind('animationDurations.vehicle2');
 }
 path.animated.vehicle-3,
 path.animatedReverse.vehicle-3 {
-  stroke: var(--q-accent);
+  color: var(--q-vehicle-stroke);
   animation-duration: v-bind('animationDurations.vehicle3');
 }
 
-@keyframes dash {
-  from {
-    stroke-dashoffset: 10;
-  }
-  to {
+@keyframes energyFlow {
+  0% {
     stroke-dashoffset: 0;
   }
+  100% {
+    stroke-dashoffset: -200;
+  }
 }
-@keyframes dashReverse {
-  from {
+@keyframes energyFlowReverse {
+  0% {
+    stroke-dashoffset: -200;
+  }
+  100% {
     stroke-dashoffset: 0;
-  }
-  to {
-    stroke-dashoffset: 10;
-  }
-}
-
-:root {
-  path.home {
-    stroke: var(--q-home-stroke);
-  }
-}
-
-.body--dark {
-  path.home {
-    stroke: var(--q-white);
   }
 }
 
 circle {
-  fill: var(--q-secondary);
   fill-opacity: 1;
-  stroke: var(--q-grey);
-  stroke-width: v-bind(svgStrokeWidth);
-  stroke-miterlimit: 2;
-  stroke-opacity: 1;
+}
+
+circle:not(.soc) {
+  fill: var(--q-card-background);
+}
+
+.info-badge .info-icon {
+  color: var(--q-primary);
 }
 
 rect {
-  stroke-width: v-bind(svgStrokeWidth);
-  fill: var(--q-secondary);
+  fill: var(--q-card-background);
 }
 
-:root {
-  image {
-    filter: brightness(0.4); /* Creates a dark grey icons in light theme */
-  }
-}
-
-.body--dark {
-  image {
-    filter: brightness(1); /* white icons in dark theme */
-  }
+/* Drop shadow by way of feDropShadow for browser compatibility (safari webkit) */
+feDropShadow {
+  flood-color: var(--q-flow-chart-shadow);
+  flood-opacity: var(--q-flow-chart-shadow-opacity);
 }
 
 text {
   font-size: v-bind(svgFontSize);
   line-height: 1.25;
-  font-family: Arial;
-  fill: var(--q-white);
+  font-family: 'Roboto', sans-serif;
+  fill: var(--q-text);
   fill-opacity: 1;
 }
 
-text .fill-success {
-  fill: var(--q-positive);
+.battery {
+  --soc-color: var(--q-battery-stroke);
 }
 
-text .fill-danger {
-  fill: var(--q-grid-stroke);
+.vehicle {
+  --soc-color: var(--q-vehicle-fill);
 }
 
-text .fill-dark {
-  fill: var(--q-brown-text);
-}
-
-.grid text {
-  fill: var(--q-grid-stroke);
-}
-
-.grid circle,
-.grid rect {
-  stroke: var(--q-grid-stroke);
-}
-
-.grid circle {
-  fill: var(--q-grid-fill);
-}
-
-.pv text {
-  fill: var(--q-pv-stroke);
-}
-
-.pv circle,
-.pv rect {
-  stroke: var(--q-pv-stroke);
-}
-
-.pv circle {
-  fill: var(--q-pv-fill);
-}
-
-.battery text {
-  fill: var(--q-battery-stroke);
-}
-
-.battery circle,
-.battery rect {
-  stroke: var(--q-battery-stroke);
-}
-
-.battery circle:not(.soc) {
-  fill: var(--q-battery-fill-flow-diagram);
-}
-
-:root {
-  .home text {
-    fill: var(--q-brown-text); /* Brown text in light theme */
-  }
-}
-
-.body--dark {
-  .home text {
-    fill: var(--q-white); /* White text in dark theme */
-  }
-}
-
-.home circle,
-.home rect {
-  stroke: var(--q-home-stroke);
-}
-
-.home circle {
-  fill: var(--q-home-fill);
-}
-
-.charge-point text {
-  fill: var(--q-charge-point-stroke);
-}
-
-.charge-point circle,
-.charge-point rect {
-  stroke: var(--q-charge-point-stroke);
-}
-
-.charge-point circle {
-  fill: var(--q-charge-point-fill);
-}
-
-.background-circle {
-  fill: var(--q-secondary) !important;
-}
-
-.vehicle text {
-  fill: var(--q-accent);
-}
-
-.vehicle circle,
-.vehicle rect {
-  stroke: var(--q-accent);
-}
-
-.vehicle circle:not(.soc) {
-  fill: color-mix(in srgb, var(--q-accent) 50%, transparent);
+use {
+  fill: currentColor;
 }
 </style>

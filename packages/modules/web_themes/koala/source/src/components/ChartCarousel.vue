@@ -5,7 +5,6 @@
     v-model="currentSlide"
     v-model:fullscreen="fullscreen"
     swipeable
-    control-color="primary"
     padding
     animated
     infinite
@@ -24,7 +23,10 @@
     <template v-slot:control>
       <q-carousel-control position="bottom-left">
         <q-btn
-          v-if="currentSlide === 'history_chart'"
+          v-if="
+            currentSlide === 'history_chart' ||
+            (currentSlide === 'sankey_chart' && sankeyCompact)
+          "
           size="sm"
           push
           class="q-mr-sm legend-button-text"
@@ -52,8 +54,10 @@ import { useQuasar } from 'quasar';
 import EnergyFlowChart from './charts/energyFlowChart/EnergyFlowChart.vue';
 import HistoryChart from './charts/historyChart/HistoryChart.vue';
 import DailyTotals from './charts/dailyTotals/DailyTotals.vue';
+import SankeyChart from './charts/sankeyChart/SankeyChart.vue';
 import { useLocalDataStore } from 'src/stores/localData-store';
 import { useMqttStore } from 'src/stores/mqtt-store';
+import { useSankeyData } from './charts/sankeyChart/useSankeyData';
 
 const mqttStore = useMqttStore();
 
@@ -67,6 +71,7 @@ const toggleLegend = () => {
   localDataStore.toggleLegendVisibility();
 };
 const legendVisible = computed(() => localDataStore.legendVisible);
+const { compact: sankeyCompact } = useSankeyData();
 const fullscreen = ref(false);
 
 const carouselKey = computed(() =>
@@ -79,6 +84,7 @@ const componentMap = {
   flow_diagram: EnergyFlowChart,
   history_chart: HistoryChart,
   daily_totals: DailyTotals,
+  sankey_chart: SankeyChart,
 };
 
 const chartCarouselItems = computed(() => {
@@ -97,12 +103,16 @@ const chartCarouselItems = computed(() => {
         name: 'daily_totals',
         component: DailyTotals,
       },
+      {
+        name: 'sankey_chart',
+        component: SankeyChart,
+      },
     ];
   }
   return slideOrder
     .map((name) => ({
       name,
-      component: componentMap[name],
+      component: componentMap[name as keyof typeof componentMap],
     }))
     .filter((item) => !!item.component);
 });

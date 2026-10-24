@@ -8,7 +8,7 @@ from modules.common.component_state import InverterState
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType
-from modules.common.store import get_inverter_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.solaredge.solaredge.config import SolaredgeInverterSetup
 from modules.devices.solaredge.solaredge.scale import scale_registers
 from modules.common.simcount import SimCounter
@@ -52,10 +52,10 @@ class SolaredgeInverter(AbstractInverter):
 
     def initialize(self) -> None:
         self.__tcp_client = self.kwargs['client']
-        self.store = get_inverter_value_store(self.component_config.id)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
-        self.sim_counter = SimCounter(self.kwargs['device_id'], self.component_config.id, prefix="Wechselrichter")
         self.peak_filter = PeakFilter(ComponentType.INVERTER, self.component_config.id, self.fault_state)
+        self.sim_counter = SimCounter(self.kwargs['device_id'], self.component_config.id, self.component_config.type)
 
     def update(self) -> None:
         self.store.set(self.read_state())
@@ -65,12 +65,13 @@ class SolaredgeInverter(AbstractInverter):
             Register.CURRENTS, 30, mapping=self.REG_MAPPING, unit=self.component_config.configuration.modbus_id)
 
         power = scale_registers(resp[Register.POWER], resp[Register.POWER_SCALE]) * -1
-        self.peak_filter.check_values(power)
+        exported = scale_registers(resp[Register.EXPORTED], resp[Register.EXPORTED_SCALE])
+        _, exported = self.peak_filter.check_values(power, None, exported)
         imported, _ = self.sim_counter.sim_count(power)
 
         return InverterState(
             power=power,
-            exported=scale_registers(resp[Register.EXPORTED], resp[Register.EXPORTED_SCALE]),
+            exported=exported,
             currents=scale_registers(resp[Register.CURRENTS], resp[Register.CURRENTS_SCALE]),
             dc_power=scale_registers(resp[Register.DC_POWER], resp[Register.DC_POWER_SCALE]) * -1,
             imported=imported,

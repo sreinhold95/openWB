@@ -72,11 +72,11 @@ class PriceValueStore(ValueStore[TariffState]):
 
         def __get_default_grid_fee_price(prices: Dict[str, float]) -> float:
             if (data.data.optional_data.grid_fee_module is not None and
-                hasattr(data.data.optional_data.grid_fee_module.config, "default_price") and
-                    data.data.optional_data.grid_fee_module.config.default_price is not None):
+                hasattr(data.data.optional_data.grid_fee_module.config.configuration, "default_price") and
+                    data.data.optional_data.grid_fee_module.config.configuration.default_price is not None):
                 log.debug("Using default grid fee price from configuration: " +
-                          f"{data.data.optional_data.grid_fee_module.config.default_price}")
-                return data.data.optional_data.grid_fee_module.config.default_price
+                          f"{data.data.optional_data.grid_fee_module.config.configuration.default_price}")
+                return data.data.optional_data.grid_fee_module.config.configuration.default_price
             else:
                 # Fallback: Median der vorhandenen Netzentgelte wird
                 # als Schätzung für das Standard-Netzentgelt verwenden
@@ -95,8 +95,8 @@ class PriceValueStore(ValueStore[TariffState]):
             grid_fee_prices = {int(float(k)): v for k, v in grid_fee_prices.items() if int(float(k)) <= max_timestamp}
 
             if (data.data.optional_data.flexible_tariff_module is not None and
-                hasattr(data.data.optional_data.flexible_tariff_module.config, "includes_grid_fee") and
-                    data.data.optional_data.flexible_tariff_module.config.includes_grid_fee is False):
+                hasattr(data.data.optional_data.flexible_tariff_module.config.configuration, "includes_grid_fee") and
+                    data.data.optional_data.flexible_tariff_module.config.configuration.includes_grid_fee is False):
                 return grid_fee_prices
             else:
                 #  Bei flexiblen Tarifen, die das Netzentgelt _nicht_ enthalten,
@@ -118,8 +118,10 @@ class PriceValueStore(ValueStore[TariffState]):
         electricity_pricing = optional_data.data.electricity_pricing
         flexible_tariff_prices = {int(float(k)): v for k, v
                                   in electricity_pricing.flexible_tariff.get.prices.items()}
-        grid_fee_prices = {int(float(k)): v for k, v
-                           in electricity_pricing.grid_fee.get.prices.items()}
+        grid_fee_prices = (
+            {int(float(k)): v for k, v in electricity_pricing.grid_fee.get.prices.items()}
+            if optional_data.grid_fee_module is not None else {}
+        )
 
         flexible_tariff_prices = __reduce_prices(flexible_tariff_prices)
         if len(flexible_tariff_prices) == 0 and len(grid_fee_prices) == 0:

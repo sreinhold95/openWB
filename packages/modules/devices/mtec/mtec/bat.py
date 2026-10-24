@@ -8,10 +8,11 @@ from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, ModbusTcpClient_
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.mtec.mtec.config import MTecBatSetup
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +30,10 @@ class MTecBat(AbstractBat):
     def initialize(self) -> None:
         self.__device_id: int = self.kwargs['device_id']
         self.client: ModbusTcpClient_ = self.kwargs['client']
-        self.store = get_bat_value_store(self.component_config.id)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="speicher")
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
 
     def update(self) -> None:
         unit = self.component_config.configuration.modbus_id
@@ -55,6 +56,29 @@ class MTecBat(AbstractBat):
             exported=exported
         )
         self.store.set(bat_state)
+
+    def set_power_limit(self, setpoint: SetPoint) -> None:
+        modbus_id = self.component_config.configuration.modbus_id
+        if setpoint.power_limit is None:
+            log.debug("Keine Batteriesteuerung, Selbstregelung durch Speicher")
+            if self.last_mode is not None:
+                self.__tcp_client.write_register(50000, 257, data_type=ModbusDataType.UINT_16, unit=modbus_id)
+                self.last_mode = None
+        elif setpoint.power_limit <= 0:
+            log.debug("Aktive Batteriesteuerung. Batterie wird auf Stop gesetzt und nicht entladen")
+            if self.last_mode != 'stop':
+                self.__tcp_client.write_register(50000, 258, data_type=ModbusDataType.UINT_16, unit=modbus_id)
+                self.last_mode = 'stop'
+        elif setpoint.power_limit > 0:
+            log.debug(f"Aktive Batteriesteuerung M-Tec:"
+                      f"Speicher soll mit {setpoint.power_limit} W geladen werden. "
+                      "kann aber nur mit maximaler Leistung laden")
+            if self.last_mode != 'charge':
+                self.__tcp_client.write_register(50000, 259, data_type=ModbusDataType.UINT_16, unit=modbus_id)
+                self.last_mode = 'charge'
+
+    def power_limit_controllable(self) -> bool:
+        return True
 
 
 component_descriptor = ComponentDescriptor(configuration_factory=MTecBatSetup)

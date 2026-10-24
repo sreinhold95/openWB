@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import logging
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from modules.common.abstract_device import AbstractBat
 from modules.common.component_state import BatState
@@ -8,11 +8,12 @@ from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, Endian, ModbusTcpClient_
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
 from modules.devices.sungrow.sungrow_sh.config import SungrowSHBatSetup, SungrowSH
 from modules.devices.sungrow.sungrow_sh.registers import RegMode
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from modules.common.store import get_component_value_store
+from control.bat import Set as SetPoint
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +31,8 @@ class SungrowSHBat(AbstractBat):
     def initialize(self) -> None:
         self.device_config: SungrowSH = self.kwargs['device_config']
         self.__tcp_client: ModbusTcpClient_ = self.kwargs['client']
-        self.sim_counter = SimCounter(self.device_config.id, self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.device_config.id, self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.last_mode = 'Undefined'
         self.register_check = self.detect_register_check()
@@ -80,8 +81,7 @@ class SungrowSHBat(AbstractBat):
             bat_current = self.__tcp_client.read_input_registers(13020, ModbusDataType.INT_16, unit=unit) * -0.1
             bat_power = self.__tcp_client.read_input_registers(13021, ModbusDataType.UINT_16, unit=unit)
 
-            resp = self.__tcp_client._delegate.read_input_registers(13000, 1, unit=unit)
-            running_state = resp.registers[0]
+            running_state = self.__tcp_client.read_input_registers(13000, ModbusDataType.UINT_16, unit=unit)
             is_charging = (running_state & 0x02) != 0
             is_discharging = (running_state & 0x04) != 0
 
@@ -118,40 +118,41 @@ class SungrowSHBat(AbstractBat):
         )
         self.store.set(bat_state)
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
         unit = self.device_config.configuration.modbus_id
         log.debug(f'last_mode: {self.last_mode}')
 
-        if power_limit is None:
+        if setpoint.power_limit is None:
             log.debug("Keine Batteriesteuerung, Selbstregelung durch Wechselrichter")
             if self.last_mode is not None:
                 self.__tcp_client.write_register(13049, 0, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.__tcp_client.write_register(13050, 0xCC, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.last_mode = None
-        elif power_limit == 0:
+        elif setpoint.power_limit == 0:
             log.debug("Aktive Batteriesteuerung. Batterie wird auf Stop gesetzt und nicht entladen")
             if self.last_mode != 'stop':
                 self.__tcp_client.write_register(13049, 2, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.__tcp_client.write_register(13050, 0xCC, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.last_mode = 'stop'
-        elif power_limit < 0:
-            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_limit} W entladen für den Hausverbrauch")
+        elif setpoint.power_limit < 0:
+            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {setpoint.power_limit} W "
+                      "entladen für den Hausverbrauch")
             if self.last_mode != 'discharge':
                 self.__tcp_client.write_register(13049, 2, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.__tcp_client.write_register(13050, 0xBB, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.last_mode = 'discharge'
             # Die maximale Entladeleistung begrenzen auf 5000W, maximaler Wertebereich Modbusregister.
-            power_value = int(min(abs(power_limit), 5000))
+            power_value = int(min(abs(setpoint.power_limit), 5000))
             log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_value} W entladen für den Hausverbrauch")
             self.__tcp_client.write_register(13051, power_value, data_type=ModbusDataType.UINT_16, unit=unit)
-        elif power_limit > 0:
-            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_limit} W geladen")
+        elif setpoint.power_limit > 0:
+            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {setpoint.power_limit} W geladen")
             if self.last_mode != 'charge':
                 self.__tcp_client.write_register(13049, 2, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.__tcp_client.write_register(13050, 0xAA, data_type=ModbusDataType.UINT_16, unit=unit)
                 self.last_mode = 'charge'
             # Die maximale Entladeleistung begrenzen auf 5000W, maximaler Wertebereich Modbusregister.
-            power_value = int(min(power_limit, 5000))
+            power_value = int(min(setpoint.power_limit, 5000))
             log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_value} W geladen")
             self.__tcp_client.write_register(13051, power_value, data_type=ModbusDataType.UINT_16, unit=unit)
 

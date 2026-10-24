@@ -397,7 +397,7 @@ export const useMqttStore = defineStore("mqtt", {
       return state.getChartData("openWB/bat/get/soc");
     },
     getBatteryMode(state) {
-      return state.topics["openWB/general/chargemode_config/pv_charging/bat_mode"];
+      return state.topics["openWB/general/chargemode_config/bat/mode"];
     },
     getPvConfigured(state) {
       return state.getValueBool("openWB/pv/config/configured");
@@ -422,6 +422,21 @@ export const useMqttStore = defineStore("mqtt", {
       return state.getChartData("openWB/pv/get/power").map((point) => {
         return point * -1;
       });
+    },
+
+    /* consumer getters */
+
+    getConsumerSumPower(state) {
+      return (returnType = "textValue") => {
+        var power = state.getValueString("openWB/consumer/get/power", "W");
+        if (Object.hasOwnProperty.call(power, returnType)) {
+          return power[returnType];
+        }
+        if (returnType == "object") {
+          return power;
+        }
+        console.error("returnType not found!", returnType, power);
+      };
     },
 
     /* charge point getters */
@@ -477,6 +492,18 @@ export const useMqttStore = defineStore("mqtt", {
         ) {
           return state.topics[`openWB/chargepoint/${chargePointId}/config`]
             .name;
+        }
+        return undefined;
+      };
+    },
+    getChargePointColor(state) {
+      return (chargePointId) => {
+        if (
+          state.topics[`openWB/chargepoint/${chargePointId}/config`] !==
+          undefined
+        ) {
+          return state.topics[`openWB/chargepoint/${chargePointId}/config`]
+            .color;
         }
         return undefined;
       };
@@ -688,11 +715,28 @@ export const useMqttStore = defineStore("mqtt", {
         return undefined;
       };
     },
+    getChargePointConnectedVehicleColor(state) {
+      return (chargePointId) => {
+        const vehicleId = state.getChargePointConnectedVehicleId(chargePointId);
+        if (vehicleId === undefined) {
+          return undefined;
+        }
+        return state.getVehicleColor(vehicleId);
+      };
+    },
+    getVehicleColor(state) {
+      return (vehicleId) => {
+        return state.topics[
+          `openWB/vehicle/${vehicleId}/color`
+        ];
+      };
+    },
     getChargePointConnectedVehicleSoc(state) {
       return (chargePointId) => {
-        return state.topics[
+        let socState = state.topics[
           `openWB/chargepoint/${chargePointId}/get/connected_vehicle/soc`
         ];
+        return socState ? {...socState, soc: Math.round(socState.soc)} : undefined;
       };
     },
     getChargePointConnectedVehicleTimeChargingActive(state) {
@@ -743,16 +787,6 @@ export const useMqttStore = defineStore("mqtt", {
           return state.getChargePointConnectedVehicleChargeTemplate(
             chargePointId,
           ).chargemode.instant_charging.phases_to_use;
-        }
-        return undefined;
-      };
-    },
-    getChargePointConnectedVehiclePvChargingFeedInLimit(state) {
-      return (chargePointId) => {
-        if (state.getChargePointConnectedVehicleChargeTemplate(chargePointId)) {
-          return state.getChargePointConnectedVehicleChargeTemplate(
-            chargePointId,
-          ).chargemode.pv_charging.feed_in_limit;
         }
         return undefined;
       };
@@ -1099,7 +1133,7 @@ export const useMqttStore = defineStore("mqtt", {
         case "eco_charging":
           return { mode: mode, label: "Eco", class: "secondary" };
         case "stop":
-          return { mode: mode, label: "Stop", class: "dark" };
+          return { mode: mode, label: "Stop", class: "light" };
         default:
           console.warn("unknown charge mode:", mode);
           return { mode: mode, label: mode, class: mode };

@@ -133,9 +133,12 @@ class JsonApiVersion(Enum):
 
 class JsonApi():
     class OperatingMode(Enum):
+        # only define modes we can override savely
         MANUAL = "1"
         SELF_CONSUMPTION = "2"
+        # MODULE_EXTENSION = "6"
         TIME_OF_USE = "10"
+        # OPTIMIZATION = "11"
 
     class PowerMeterDirection(Enum):
         PRODUCTION = "production"
@@ -408,14 +411,17 @@ class JsonApi():
             _, inverter_state.exported = sim_counter.sim_count(inverter_state.power)
             return inverter_state
 
-    def update_consumption_counter(self, sim_counter: SimCounter, peak_filter: PeakFilter) -> CounterState:
+    def update_consumption_counter(self,
+                                   sim_counter: SimCounter,
+                                   peak_filter: PeakFilter,
+                                   counter_id: int) -> CounterState:
         """
         Updates the consumption counter state by reading data from the JSON API.
         Returns:
             CounterState: The updated consumption counter state.
         """
         counter_state = self.__state_from_channel(
-            self.__read_power_meter(direction=self.PowerMeterDirection.CONSUMPTION)[0])
+            self.__read_power_meter(direction=self.PowerMeterDirection.CONSUMPTION)[counter_id])
         # meter value is updated way too slow, so we use a sim counter to get the im-/exported energy
         peak_filter.check_values(counter_state.power)
         counter_state.imported, counter_state.exported = sim_counter.sim_count(counter_state.power)
@@ -444,12 +450,18 @@ class JsonApi():
         configurations = self.__get_configurations()
         if "EM_OperatingMode" not in configurations:
             raise KeyError("The key 'EM_OperatingMode' is missing in the API response.")
+        try:
+            self.OperatingMode(configurations["EM_OperatingMode"])
+        except ValueError:
+            raise ValueError("Aktive Speichersteuerung wird in "
+                             f"Betriebsmodus {configurations['EM_OperatingMode']} "
+                             "nicht unterstützt.")
         if self.default_operating_mode is None:
             # Store the default operating mode for later restoration
             self.default_operating_mode = self.OperatingMode(configurations["EM_OperatingMode"])
             log.debug(f"default_operating_mode set to: {self.default_operating_mode}")
-
         operating_mode = self.OperatingMode(configurations["EM_OperatingMode"])
+
         if power_limit is None:
             # No specific power limit is set, activating default mode to allow the system to optimize energy usage by it
             # self.

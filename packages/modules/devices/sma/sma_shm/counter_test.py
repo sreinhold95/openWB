@@ -1,9 +1,7 @@
 import base64
-import pytest
 
-from helpermodules import compatibility
-from modules.devices.sma.sma_shm import counter, speedwiredecoder
-from test_utils.mock_ramdisk import MockRamdisk
+from modules.common.component_state import CounterState, InverterState
+from modules.devices.sma.sma_shm import counter, inverter, speedwiredecoder
 
 # This sample was collected from an SMA Energy Meter with Firmware 2.0.18.R on 2021-12-22:
 SAMPLE_SMA_ENERGY_EM = """
@@ -21,13 +19,7 @@ OkkgBJBAAAAAPokAAAAAIAElIAAAAA
 """
 
 
-@pytest.fixture
-def mock_ramdisk(monkeypatch):
-    monkeypatch.setattr(compatibility, "is_ramdisk_in_use", lambda: True)
-    return MockRamdisk(monkeypatch)
-
-
-def test_process_datagram_energy_meter(mock_ramdisk):
+def test_process_datagram_energy_meter(data_):
     # setup
     data = base64.b64decode(SAMPLE_SMA_ENERGY_EM)
     sma_data = speedwiredecoder.decode_speedwire(data)
@@ -35,21 +27,31 @@ def test_process_datagram_energy_meter(mock_ramdisk):
     sma_counter.initialize()
 
     # execution
-    sma_counter.read_datagram(sma_data)
+    assert sma_counter.read_datagram(sma_data)
 
     # evaluation
-    assert mock_ramdisk.files["wattbezug"] == "-11967"
-    assert mock_ramdisk.files["einspeisungkwh"] == "86688627.0"
-    assert mock_ramdisk.files["bezugkwh"] == "7500240.0"
-    assert mock_ramdisk.files["bezugw1"] == "-4077"
-    assert mock_ramdisk.files["bezugw2"] == "-4077"
-    assert mock_ramdisk.files["bezugw3"] == "-3813"
-    assert mock_ramdisk.files["bezuga1"] == "-17.16"
-    assert mock_ramdisk.files["bezuga2"] == "-17.1"
-    assert mock_ramdisk.files["bezuga3"] == "-16.02"
-    assert mock_ramdisk.files["evuv1"] == "238.438"
-    assert mock_ramdisk.files["evuv2"] == "239.298"
-    assert mock_ramdisk.files["evuv3"] == "238.738"
-    assert mock_ramdisk.files["evupf1"] == "0.999"
-    assert mock_ramdisk.files["evupf2"] == "0.999"
-    assert mock_ramdisk.files["evupf3"] == "1.0"
+    assert vars(sma_counter.store.delegate.delegate.state) == vars(CounterState(currents=[-17.16, -17.1, -16.02],
+                                                                                powers=[-4077.0, -4077.0, -3813.0],
+                                                                                voltages=[238.438, 239.298, 238.738],
+                                                                                power_factors=[0.999, 0.999, 1.0],
+                                                                                imported=7500240.0,
+                                                                                exported=86688627.0,
+                                                                                power=-11967.0,
+                                                                                frequency=50,
+                                                                                serial_number=None))
+
+
+def test_process_datagram_inverter(data_):
+    # setup
+    decoded_data = speedwiredecoder.decode_speedwire(base64.b64decode(SAMPLE_SMA_ENERGY_EM))
+    sma_inverter = inverter.create_component(inverter.component_descriptor.configuration_factory(id=1))
+    sma_inverter.initialize()
+
+    # execution
+    assert sma_inverter.read_datagram(decoded_data)
+
+    # evaluation
+    assert vars(sma_inverter.store.delegate.delegate.state) == vars(InverterState(
+        power=-11967,
+        exported=86688627.0,
+    ))

@@ -26,12 +26,13 @@
   <div v-if="acChargingEnabled">
     <div class="text-subtitle2 q-mt-sm q-mr-sm">Anzahl Phasen</div>
     <div class="row items-center justify-center q-ma-none q-pa-none no-wrap">
-      <q-btn-group class="col">
+      <q-btn-group class="col" outline>
         <q-btn
           v-for="option in phaseOptions"
           :key="option.value"
           :color="numPhases.value === option.value ? 'primary' : 'grey'"
           :label="option.label"
+          :outline="numPhases.value !== option.value"
           size="sm"
           class="col"
           @click="numPhases.value = option.value"
@@ -75,12 +76,13 @@
         Anzahl Phasen Mindest-SoC
       </div>
       <div class="row items-center justify-center q-ma-none q-pa-none no-wrap">
-        <q-btn-group class="col">
+        <q-btn-group class="col" outline>
           <q-btn
             v-for="option in phaseOptionsMinSoc"
             :key="option.value"
             :color="numPhasesMinSoc.value === option.value ? 'primary' : 'grey'"
             :label="option.label"
+            :outline="numPhasesMinSoc.value !== option.value"
             size="sm"
             class="col"
             @click="numPhasesMinSoc.value = option.value"
@@ -89,21 +91,11 @@
       </div>
     </div>
   </div>
-
-  <div
-    class="row items-center justify-between q-ma-none q-pa-none no-wrap q-mt-md"
-  >
-    <div class="text-subtitle2 q-mr-sm">Einspeisegrenze beachten</div>
-    <div>
-      <ToggleStandard dense v-model="feedInLimit.value" />
-    </div>
-  </div>
 </template>
 
 <script setup lang="ts">
 import { useMqttStore } from 'src/stores/mqtt-store';
 import SliderStandard from './SliderStandard.vue';
-import ToggleStandard from './ToggleStandard.vue';
 import { computed } from 'vue';
 
 const props = defineProps<{
@@ -165,9 +157,5 @@ const pvMinSocCurrent = computed(() =>
   mqttStore.chargePointConnectedVehiclePvChargeMinSocCurrent(
     props.chargePointId,
   ),
-);
-
-const feedInLimit = computed(() =>
-  mqttStore.chargePointConnectedVehiclePvChargeFeedInLimit(props.chargePointId),
 );
 </script>

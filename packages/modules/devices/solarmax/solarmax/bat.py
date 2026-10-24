@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import logging
-from typing import TypedDict, Any, Optional
+from typing import TypedDict, Any
 
 from pymodbus.constants import Endian
 from modules.common.abstract_device import AbstractBat
@@ -9,10 +9,11 @@ from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.modbus import ModbusDataType, ModbusTcpClient_
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 from modules.devices.solarmax.solarmax.config import SolarmaxBatSetup
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +31,8 @@ class SolarmaxBat(AbstractBat):
     def initialize(self) -> None:
         self.__device_id: int = self.kwargs['device_id']
         self.client: ModbusTcpClient_ = self.kwargs['client']
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
 
@@ -50,28 +51,29 @@ class SolarmaxBat(AbstractBat):
         )
         self.store.set(bat_state)
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
         unit = self.component_config.configuration.modbus_id
         log.debug(f'last_mode: {self.last_mode}')
         # reg 142 is automatically reset every 60s so needs to be written continuously
-        if power_limit is None:
+        if setpoint.power_limit is None:
             log.debug("Keine Batteriesteuerung, Selbstregelung durch Wechselrichter")
             if self.last_mode is not None:
                 self.client.write_register(142, 0, data_type=ModbusDataType.INT_16, unit=unit)
                 self.last_mode = None
-        elif power_limit >= 0:
+        elif setpoint.power_limit >= 0:
             # Solarmax kann nicht aktiv laden
             log.debug("Aktive Batteriesteuerung. Batterie wird auf Stop gesetzt und nicht entladen")
             self.client.write_register(140, 0, data_type=ModbusDataType.INT_16, unit=unit)
             self.client.write_register(141, 0, data_type=ModbusDataType.INT_16, unit=unit)
             self.client.write_register(142, 1, data_type=ModbusDataType.INT_16, unit=unit)
             self.last_mode = 'stop'
-        elif power_limit < 0:
-            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_limit} W entladen für den Hausverbrauch")
+        elif setpoint.power_limit < 0:
+            log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {setpoint.power_limit} "
+                      "W entladen für den Hausverbrauch")
             self.client.write_register(142, 1, data_type=ModbusDataType.INT_16, unit=unit)
             self.last_mode = 'discharge'
             # Die maximale Entladeleistung begrenzen auf 5000W, maximaler Wertebereich Modbusregister.
-            power_value = int(min(abs(power_limit), 7000))
+            power_value = int(min(abs(setpoint.power_limit), 7000))
             log.debug(f"Aktive Batteriesteuerung. Batterie wird mit {power_value} W entladen für den Hausverbrauch")
             self.client.write_register(140, power_value, data_type=ModbusDataType.INT_16, unit=unit)
             self.client.write_register(141, power_value, data_type=ModbusDataType.INT_16, unit=unit)

@@ -9,7 +9,7 @@ class GrowattConfiguration:
     def __init__(self, modbus_id: int = 1,
                  ip_address: Optional[str] = None,
                  port: int = 502,
-                 version: GrowattVersion = GrowattVersion.max_series):
+                 version: GrowattVersion = GrowattVersion.tlx):
         self.modbus_id = modbus_id
         self.ip_address = ip_address
         self.port = port
@@ -39,8 +39,9 @@ class GrowattBatSetup(ComponentSetup[GrowattBatConfiguration]):
                  name: str = "Growatt Speicher",
                  type: str = "bat",
                  id: int = 0,
-                 configuration: GrowattBatConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or GrowattBatConfiguration())
+                 configuration: GrowattBatConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or GrowattBatConfiguration(), **kwargs)
 
 
 class GrowattCounterConfiguration:
@@ -53,8 +54,9 @@ class GrowattCounterSetup(ComponentSetup[GrowattCounterConfiguration]):
                  name: str = "Growatt Zähler",
                  type: str = "counter",
                  id: int = 0,
-                 configuration: GrowattCounterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or GrowattCounterConfiguration())
+                 configuration: GrowattCounterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or GrowattCounterConfiguration(), **kwargs)
 
 
 class GrowattInverterConfiguration:
@@ -67,5 +69,6 @@ class GrowattInverterSetup(ComponentSetup[GrowattInverterConfiguration]):
                  name: str = "Growatt Wechselrichter",
                  type: str = "inverter",
                  id: int = 0,
-                 configuration: GrowattInverterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or GrowattInverterConfiguration())
+                 configuration: GrowattInverterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or GrowattInverterConfiguration(), **kwargs)

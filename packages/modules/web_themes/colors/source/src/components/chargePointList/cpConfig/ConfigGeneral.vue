@@ -13,11 +13,11 @@
 			v-model="cp.chargeMode"
 			:columns="3"
 			:options="
-				Object.keys(chargemodes).map((v) => [
-					chargemodes[v].name,
-					v,
-					chargemodes[v].color,
-					chargemodes[v].icon,
+				Object.entries(chargemodes).map(([key, value]) => [
+					value.name,
+					key,
+					value.color,
+					value.icon,
 				])
 			"
 		/>
@@ -133,13 +133,19 @@ const props = defineProps<{
 defineEmits(['closeConfig'])
 //state
 const cp = props.chargepoint
-const vehicle = vehicles[cp.connectedVehicle]
+
 const templateId = computed({
 	get() {
-		return vehicle.chargeTemplateId
+		if (vehicles[cp.connectedVehicle]) {
+			return vehicles[cp.connectedVehicle].chargeTemplateId
+		} else {
+			return 0
+		}
 	},
 	set(value: number) {
-		vehicle.chargeTemplateId = value
+		if (vehicles[cp.connectedVehicle]) {
+			vehicles[cp.connectedVehicle].chargeTemplateId = value
+		}
 		cp.chargeTemplate = chargeTemplates[value]
 	},
 })

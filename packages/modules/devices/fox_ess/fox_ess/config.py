@@ -15,7 +15,7 @@ class FoxEssConfiguration:
 
 class FoxEss:
     def __init__(self,
-                 name: str = "FoxESS",
+                 name: str = "FoxESS H3",
                  type: str = "fox_ess",
                  id: int = 0,
                  configuration: FoxEssConfiguration = None) -> None:
@@ -35,11 +35,12 @@ class FoxEssBatConfiguration:
 @auto_str
 class FoxEssBatSetup(ComponentSetup[FoxEssBatConfiguration]):
     def __init__(self,
-                 name: str = "FoxESS Speicher",
+                 name: str = "FoxESS H3 Speicher",
                  type: str = "bat",
                  id: int = 0,
-                 configuration: FoxEssBatConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or FoxEssBatConfiguration())
+                 configuration: FoxEssBatConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or FoxEssBatConfiguration(), **kwargs)
 
 
 @auto_str
@@ -51,11 +52,12 @@ class FoxEssCounterConfiguration:
 @auto_str
 class FoxEssCounterSetup(ComponentSetup[FoxEssCounterConfiguration]):
     def __init__(self,
-                 name: str = "FoxESS Zähler",
+                 name: str = "FoxESS H3 Zähler",
                  type: str = "counter",
                  id: int = 0,
-                 configuration: FoxEssCounterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or FoxEssCounterConfiguration())
+                 configuration: FoxEssCounterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or FoxEssCounterConfiguration(), **kwargs)
 
 
 @auto_str
@@ -67,8 +69,9 @@ class FoxEssInverterConfiguration:
 @auto_str
 class FoxEssInverterSetup(ComponentSetup[FoxEssInverterConfiguration]):
     def __init__(self,
-                 name: str = "FoxESS Wechselrichter",
+                 name: str = "FoxESS H3 Wechselrichter",
                  type: str = "inverter",
                  id: int = 0,
-                 configuration: FoxEssInverterConfiguration = None) -> None:
-        super().__init__(name, type, id, configuration or FoxEssInverterConfiguration())
+                 configuration: FoxEssInverterConfiguration = None,
+                 **kwargs) -> None:
+        super().__init__(name, type, id, configuration or FoxEssInverterConfiguration(), **kwargs)

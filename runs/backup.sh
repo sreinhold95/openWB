@@ -1,16 +1,19 @@
 #!/bin/bash
+set -Ee -o pipefail
+
 OPENWBBASEDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OPENWBDIRNAME=${OPENWBBASEDIR##*/}
 OPENWBDIRNAME=${OPENWBDIRNAME:-/}
 TARBASEDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 BACKUPDIR="$OPENWBBASEDIR/data/backup"
 RAMDISKDIR="$OPENWBBASEDIR/ramdisk"
-TEMPDIR=$(mktemp -d --tmpdir openwb_backup_XXXXXX)
+TEMPDIR=""
 LOGDIR="$OPENWBBASEDIR/data/log"
 LOGFILE="$LOGDIR/backup.log"
 HOMEDIR="/home/openwb"
 KEYFILE="backup.key"
 VAR_LIB="/var/lib"
+BACKUPFILE=""
 
 # Mosquitto DB files to monitor
 DB_FILES=(
@@ -178,18 +181,31 @@ force_mosquitto_write() {
 
 collect_git_info() {
 	echo "collecting git information"
-	if git branch --no-color --show-current >"$TEMPDIR/GIT_BRANCH"; then
+	if git -C "$OPENWBBASEDIR" branch --no-color --show-current >"$TEMPDIR/GIT_BRANCH"; then
 		echo "current branch: $(<"$TEMPDIR/GIT_BRANCH")"
 	else
 		echo "failed to collect git branch info"
 		return 1
 	fi
-	if git log --pretty='format:%H' -n1 >"$TEMPDIR/GIT_HASH"; then
+	if git -C "$OPENWBBASEDIR" log --pretty='format:%H' -n1 >"$TEMPDIR/GIT_HASH"; then
 		echo "current commit hash: $(<"$TEMPDIR/GIT_HASH")"
 	else
 		echo "failed to collect git commit hash"
 		return 1
 	fi
+	local logicalBranch=""
+	if [[ -z $(<"$TEMPDIR/GIT_BRANCH") ]]; then
+		logicalBranch=$(git -C "$OPENWBBASEDIR" config --local --get openwb.updateBranch) || logicalBranch=""
+	fi
+	case "$logicalBranch" in
+	"Release"|"Beta"|"") ;;
+	*)
+		echo "invalid logical update branch '$logicalBranch'"
+		return 1
+		;;
+	esac
+	printf '%s\n' "$logicalBranch" >"$TEMPDIR/GIT_UPDATE_BRANCH"
+	echo "logical update branch: $logicalBranch"
 	return 0
 }
 
@@ -200,17 +216,20 @@ create_archive() {
 
 		# JSON-Dateien im clients-Ordner sammeln
 		json_files=()
+		find "$TARBASEDIR/$OPENWBDIRNAME/data/clients" -maxdepth 1 -type f -name '*.json' -print0 >"$TEMPDIR/client_json_files"
 		while IFS= read -r -d '' file; do
 			json_files+=("${file#$TARBASEDIR/}")
-		done < <(find "$TARBASEDIR/$OPENWBDIRNAME/data/clients" -maxdepth 1 -type f -name '*.json' -print0)
+		done <"$TEMPDIR/client_json_files"
+		rm "$TEMPDIR/client_json_files"
 
-		sudo tar --verbose --create \
+		sudo tar --create \
 			--file="$BACKUPFILE" \
 			--exclude=".gitignore" \
 			--directory="$TEMPDIR/" \
 				"${DB_FILES[@]}" \
 				"GIT_BRANCH" \
 				"GIT_HASH" \
+				"GIT_UPDATE_BRANCH" \
 			--directory="/etc/mosquitto/" \
 				"conf_local.d/" \
 			--directory="$TARBASEDIR/" \
@@ -226,7 +245,7 @@ create_archive() {
 		
 		if [ -f "$VAR_LIB/mosquitto/dynamic-security.json" ]; then
 			echo "adding mosquitto/dynamic-security.json"
-			sudo tar --verbose --append \
+			sudo tar --append \
 				--file="$BACKUPFILE" \
 				--directory="$VAR_LIB/" \
 					"mosquitto/dynamic-security.json"
@@ -235,7 +254,7 @@ create_archive() {
 		fi
 		if [ -f "$HOMEDIR/.config/mosquitto_ctrl" ]; then
 			echo "adding mosquitto_ctrl file"
-			sudo tar --verbose --append \
+			sudo tar --append \
 				--file="$BACKUPFILE" \
 				--directory="$HOMEDIR/.config/" \
 					"mosquitto_ctrl"
@@ -246,25 +265,22 @@ create_archive() {
 
 	calculate_checksums() {
 		echo "calculating checksums"
-		IFS=$'\n'
-		mapfile -t file_list < <(tar -tf "$BACKUPFILE")
-		# process each file
-		for file in "${file_list[@]}"; do
-			# skip directories
-			if [[ $file =~ /$ ]]; then
-				echo "skipping directory $file"
-				continue
-			fi
-			# extract the file
-			tar -xf "$BACKUPFILE" -C "$TEMPDIR" "$file"
-			# calculate the checksum
-			sha256sum "$TEMPDIR/$file" | sed -n "s|$TEMPDIR/||p" >> "$TEMPDIR/SHA256SUM"
-			# remove the file
-			rm -f "$TEMPDIR/$file"
-		done
+		# Stream each regular file directly into sha256sum. This reads the archive
+		# once and avoids temporary copies of large log files.
+		# shellcheck disable=SC2016
+		if ! tar --extract \
+			--file="$BACKUPFILE" \
+			--to-command='if [ "$TAR_FILETYPE" = "f" ]; then
+				checksum=$(sha256sum) || exit 1
+				printf "%s  %s\n" "${checksum%% *}" "$TAR_FILENAME"
+			fi' \
+			>"$TEMPDIR/SHA256SUM"; then
+			echo "failed to calculate checksums"
+			return 1
+		fi
 
 		echo "adding checksum file to archive"
-		sudo tar --verbose --append \
+		sudo tar --append \
 			--file="$BACKUPFILE" \
 			--directory="$TEMPDIR/" \
 				"SHA256SUM"
@@ -279,7 +295,7 @@ create_archive() {
 			--directory="$LOGDIR/" \
 				"backup.log"
 		echo "zipping archive"
-		gzip --verbose --suffix "$FILENAMESUFFIX" "$BACKUPFILE"
+		gzip --suffix "$FILENAMESUFFIX" "$BACKUPFILE"
 	}
 
 	encrypt_backup() {
@@ -309,16 +325,29 @@ create_archive() {
 	fix_permissions
 }
 
+handle_error() {
+	local exit_status=$?
+	local failed_line=${BASH_LINENO[0]:-unknown}
+	trap - ERR
+	echo "ERROR: backup failed at line $failed_line (exit status $exit_status)"
+	if [[ -n "$TEMPDIR" && -d "$TEMPDIR" ]]; then
+		rm -rf -- "$TEMPDIR" || echo "ERROR: failed to remove temporary directory '$TEMPDIR'"
+	fi
+	if [[ -n "$BACKUPFILE" ]]; then
+		rm -f -- "$BACKUPFILE" "$BACKUPFILE$FILENAMESUFFIX" "$BACKUPFILE$FILENAMESUFFIX.gpg" ||
+			echo "ERROR: failed to remove incomplete backup files"
+	fi
+	exit "$exit_status"
+}
+
 {
+	trap handle_error ERR
+	TEMPDIR=$(mktemp -d --tmpdir openwb_backup_XXXXXX)
 	generate_filename
 	log_environment
 	remove_old_backups
-	if collect_git_info; then
-		echo "git information collected successfully"
-	else
-		echo "error: failed to collect git information"
-		exit 1
-	fi
+	collect_git_info
+	echo "git information collected successfully"
 	force_mosquitto_write
 	create_archive
 	echo "backup finished"

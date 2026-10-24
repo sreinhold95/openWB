@@ -6,12 +6,13 @@ from modules.common.abstract_device import AbstractBat
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
+from modules.common.store import get_component_value_store
 
 from modules.devices.sonnen.sonnenbatterie.api import JsonApi, JsonApiVersion, RestApi1, RestApi2
 from modules.devices.sonnen.sonnenbatterie.config import SonnenbatterieBatSetup
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 
 log = logging.getLogger(__name__)
@@ -36,8 +37,8 @@ class SonnenbatterieBat(AbstractBat):
         self.__api_v2_token: Optional[str] = self.kwargs['device_api_v2_token']
         if self.__device_variant not in [0, 1, 2, 3]:
             raise ValueError("Unbekannte API: " + str(self.__device_variant))
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         if self.__device_variant == 0:
             self.api = RestApi1(host=self.__device_address)
@@ -53,14 +54,14 @@ class SonnenbatterieBat(AbstractBat):
     def update(self) -> None:
         self.store.set(self.api.update_battery(sim_counter=self.sim_counter, peak_filter=self.peak_filter))
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
-        if power_limit is None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
+        if setpoint.power_limit is None:
             # Wert wird nur einmal gesetzt
             if self.last_mode is not None:
-                self.api.set_power_limit(power_limit=power_limit)
+                self.api.set_power_limit(power_limit=setpoint.power_limit)
                 self.last_mode = None
         else:
-            self.api.set_power_limit(power_limit=power_limit)
+            self.api.set_power_limit(power_limit=setpoint.power_limit)
             self.last_mode = 'active'
 
     def power_limit_controllable(self) -> bool:

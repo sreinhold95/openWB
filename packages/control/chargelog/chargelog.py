@@ -1,3 +1,4 @@
+from control.chargemode import Chargemode
 from helpermodules.utils.json_file_handler import write_and_check
 from helpermodules import timecheck
 import copy
@@ -10,8 +11,10 @@ import pathlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from control import data
-from helpermodules.measurement_logging.process_log import (
+from helpermodules.measurement_logging.process_log_calculation import (
     FILE_ERRORS, CalculationType, _analyse_energy_source, _process_entries, get_totals)
+
+from helpermodules.measurement_logging.process_log_entry_builder import create_entry
 
 # alte Daten: Startzeitpunkt der Ladung, Endzeitpunkt, Geladene Reichweite, Energie, Leistung, Ladedauer, LP-Nummer,
 # Lademodus, ID-Tag
@@ -99,8 +102,8 @@ def collect_data(chargepoint):
                 if get_value_or_default(lambda: log_data.timestamp_start_charging is None):
                     log_data.timestamp_start_charging = now
                     submode = get_value_or_default(lambda: chargepoint.data.control_parameter.submode, "")
-                    if submode == "time_charging":
-                        log_data.chargemode_log_entry = "time_charging"
+                    if submode == Chargemode.TIME_CHARGING:
+                        log_data.chargemode_log_entry = Chargemode.TIME_CHARGING.value
                     else:
                         log_data.chargemode_log_entry = get_value_or_default(
                             lambda: chargepoint.data.control_parameter.chargemode.value)
@@ -327,14 +330,19 @@ def write_new_entry(new_entry):
 def calc_energy_costs(cp, create_log_entry: bool = False):
     try:
         if cp.data.set.log.imported_since_plugged != 0 and cp.data.set.log.imported_since_mode_switch != 0:
-            processed_entries, reference_entries = _get_reference_entries()
+            processed_entries, reference_entries = _get_reference_entries(cp, create_log_entry)
             charged_energy_by_source = calculate_charged_energy_by_source(
                 cp, processed_entries, reference_entries, create_log_entry)
             _add_charged_energy_by_source(cp, charged_energy_by_source)
             log.debug(f"charged_energy_by_source {charged_energy_by_source} "
                       f"total charged_energy_by_source {cp.data.set.log.charged_energy_by_source}")
-            costs = _calc_costs(charged_energy_by_source, reference_entries[-1]["prices"])
-            cp.data.set.log.costs += costs
+            prices = data.data.general_data.data.prices
+            if (prices.bat == prices.grid == prices.pv and
+                    data.data.optional_data.data.electricity_pricing.configured is False):
+                cp.data.set.log.costs = cp.data.set.log.imported_since_mode_switch * prices.bat
+            else:
+                costs = _calc_costs(charged_energy_by_source, reference_entries[-1]["prices"])
+                cp.data.set.log.costs += costs
     except Exception:
         log.exception(f"Fehler beim Berechnen der Ladekosten für Ladepunkt {cp.num}")
 
@@ -354,17 +362,19 @@ def calculate_charged_energy_by_source(cp, processed_entries, reference_entries,
             charged_energy = (reference_entries[-1]["cp"][f"cp{cp.num}"]["imported"] -
                               reference_entries[0]["cp"][f"cp{cp.num}"]["imported"])
         elif reference == ReferenceTime.END:
-            if ((timecheck.create_timestamp()-cp.data.set.log.timestamp_mode_switch) < MEASUREMENT_LOGGING_INTERVAL):
+            if sum(cp.data.set.log.charged_energy_by_source.values()) == 0:
+                # Kurze Ladung, für die noch kein 5min-Intervall vergangen ist
                 charged_energy = cp.data.set.log.imported_since_mode_switch
             else:
-                log.debug(f"cp.data.get.imported {cp.data.get.imported}")
-                charged_energy = cp.data.get.imported - \
-                    reference_entries[-1]["cp"][f"cp{cp.num}"]["imported"]
+                # Nur das noch nicht verbuchte Intervall
+                charged_energy = (reference_entries[-1]["cp"][f"cp{cp.num}"]["imported"] -
+                                  reference_entries[0]["cp"][f"cp{cp.num}"]["imported"])
         else:
             raise TypeError(f"Unbekannter Referenz-Zeitpunkt {reference}")
         log.debug(f'power source {relative_energy_source}')
         log.debug(f"charged_energy {charged_energy}")
-        if charged_energy < 100:
+        # Wenn keine Energie geladen wurde, keine Anteile berechnen
+        if charged_energy <= 0:
             # wenn nur entladen wurde, keine Anteile berechnen
             return {source: 0 for source in ENERGY_SOURCES}
         return _get_charged_energy_by_source(
@@ -396,12 +406,26 @@ def _get_reference_position(cp, create_log_entry: bool) -> ReferenceTime:
             return ReferenceTime.MIDDLE
 
 
-def _get_reference_entries() -> Tuple[List[Dict], List]:
+def _get_reference_entries(cp, create_log_entry: bool = False) -> Tuple[List[Dict], List]:
     processed_entries = {}
     reference_entries = []
     try:
-        entries = get_todays_daily_log()["entries"]
-        if len(entries) >= 2:
+        log_data = get_todays_daily_log()
+        names = log_data["names"]
+        entries = log_data["entries"]
+        if create_log_entry:
+            # beim beenden einer Ladung den aktuellen Messwert benutzen
+            if entries:
+                previous_entry = entries[-1]
+            else:
+                # Bei Tageswechsel
+                date_day_before = (datetime.datetime.now() + datetime.timedelta(days=-1)).strftime("%Y%m%d")
+                entries_day_before = get_daily_log(date_day_before)["entries"]
+                previous_entry = entries_day_before[-1]
+
+            current_entry = create_entry(None, previous_entry)
+            reference_entries = [previous_entry, current_entry]
+        elif len(entries) >= 2:
             reference_entries = [entries[-2], entries[-1]]
         else:
             date_day_before = (datetime.datetime.now() + datetime.timedelta(days=-1)).strftime("%Y%m%d")
@@ -409,8 +433,9 @@ def _get_reference_entries() -> Tuple[List[Dict], List]:
             reference_entries = [entries_day_before[-1], entries[0]]
         processed_entries["entries"] = copy.deepcopy(reference_entries)
         processed_entries["entries"] = _process_entries(processed_entries["entries"], CalculationType.ENERGY)
+        processed_entries["names"] = names
         processed_entries["totals"] = get_totals(processed_entries["entries"], False)
-        processed_entries = _analyse_energy_source(processed_entries)
+        processed_entries = _analyse_energy_source(processed_entries, f"cp{cp.num}")
     except Exception:
         log.exception("Fehler beim Zusammenstellen der zwei letzten Logeinträge")
     finally:

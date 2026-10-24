@@ -1,8 +1,10 @@
 <template>
   <q-card
     ref="cardRef"
-    class="card-width"
-    :class="{ 'full-height': props.fullHeight }"
+    class="vehicle-card"
+    :class="{
+      'full-height': props.fullHeight,
+    }"
   >
     <q-card-section class="row no-wrap">
       <div class="text-h6 text-bold ellipsis" :title="vehicle?.name">
@@ -28,6 +30,9 @@
         <div class="text-subtitle2">Modell:</div>
         {{ vehicleInfo?.model || 'keine Angabe' }}
       </div>
+    </q-card-section>
+    <q-card-section>
+      <BaseFaultMessage :fault-state="faultState" :message="faultMessage" />
     </q-card-section>
     <q-separator inset class="q-mt-sm" />
     <q-card-section>
@@ -64,6 +69,7 @@ import { useMqttStore } from 'src/stores/mqtt-store';
 import { useQuasar } from 'quasar';
 import SliderDouble from './SliderDouble.vue';
 import ManualSocDialog from './ManualSocDialog.vue';
+import BaseFaultMessage from './BaseFaultMessage.vue';
 import VehicleConnectionStateIcon from './VehicleConnectionStateIcon.vue';
 
 const cardRef = ref<{ $el: HTMLElement } | null>(null);
@@ -89,6 +95,12 @@ const vehicleInfo = computed(() => {
   return mqttStore.vehicleInfo(props.vehicleId);
 });
 
+const faultState = computed(() => mqttStore.vehicleFaultState(props.vehicleId));
+
+const faultMessage = computed(
+  () => mqttStore.vehicleFaultMessage(props.vehicleId) ?? '',
+);
+
 const vehicleSocType = computed(() => {
   return mqttStore.vehicleSocType(props.vehicleId);
 });
@@ -104,11 +116,18 @@ const refreshSoc = () => {
     message: 'SoC Update angefordert.',
   });
 };
+
+const vehicleColor = computed(() => {
+  return mqttStore.vehicleColor(props.vehicleId) || 'var(--q-vehicle-stroke)';
+});
 </script>
 
 <style lang="scss" scoped>
-.card-width {
+.vehicle-card {
   width: 22em;
+  border: none;
+  border-left: 4px solid v-bind(vehicleColor);
+  border-radius: 15px;
 }
 
 .q-card__section {

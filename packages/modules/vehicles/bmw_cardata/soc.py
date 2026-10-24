@@ -4,6 +4,9 @@ from typing import List, Optional
 
 from requests.exceptions import RequestException
 
+from control import data as control_data
+from dataclass_utils import asdict
+from helpermodules.pub import Pub
 from modules.common import req
 from modules.common.abstract_device import DeviceDescriptor
 from modules.common.abstract_vehicle import VehicleUpdateData
@@ -16,23 +19,50 @@ log = logging.getLogger(__name__)
 BMW_AUTH_URL = "https://customer.bmwgroup.com/gcdm/oauth"
 BMW_API_URL = "https://api-cardata.bmwgroup.com"
 
-FIELD_SOC = "vehicle.drivetrain.electricEngine.charging.level"
-FIELD_SOC_ALT = "vehicle.drivetrain.batteryManagement.header"
-FIELD_RANGE = "vehicle.drivetrain.electricEngine.remainingElectricRange"
+# Reihenfolge = Priorität beim Auslesen (siehe _extract_first_value): das
+# erste Attribut, das in der API-Antwort einen Wert liefert, gewinnt. Alte,
+# etablierte Attribute stehen vorne (funktionieren bei den meisten Fahrzeugen
+# nach wie vor), neue Fallback-Attribute werden hinten angehängt und greifen
+# nur, wenn die vorherigen für das Fahrzeug nicht existieren. Bestehende
+# Einträge nicht entfernen – sonst brechen Fahrzeuge, die sie noch liefern.
+# Alle Einträge gegen den offiziellen BMW CarData Telematikdatenkatalog
+# verifiziert. S. https://github.com/openWB/core/discussions/3420
+FIELD_SOC_CANDIDATES = [
+    "vehicle.drivetrain.electricEngine.charging.level",
+    "vehicle.drivetrain.batteryManagement.header",
+    "vehicle.powertrain.electric.battery.stateOfCharge.displayed",
+    # "Neue Klasse" (NK/NA5, ab 2026, z.B. neuer iX3/i3): weder charging.level
+    # noch batteryManagement.header verfügbar; wird nur bei Fahrtende befüllt.
+    "vehicle.trip.segment.end.drivetrain.batteryManagement.hvSoc",
+]
+FIELD_RANGE_CANDIDATES = [
+    "vehicle.drivetrain.electricEngine.remainingElectricRange",
+    "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",
+]
 FIELD_STATUS = "vehicle.drivetrain.electricEngine.charging.status"
 FIELD_ODOMETER_CANDIDATES = [
     "vehicle.vehicle.travelledDistance",
+    # wird nur bei Fahrtende befüllt ("Mileage after last drive")
     "vehicle.trip.segment.end.travelledDistance",
 ]
+FIELD_TARGET_SOC = "vehicle.powertrain.electric.battery.stateOfCharge.target"
 
 CONTAINER_NAME = "ChargeStats"
 CONTAINER_PURPOSE = "openWB"
 CONTAINER_DESCRIPTORS = [
-    "vehicle.drivetrain.electricEngine.charging.status",
-    "vehicle.drivetrain.electricEngine.charging.level",
-    "vehicle.drivetrain.batteryManagement.header",
-    "vehicle.drivetrain.electricEngine.remainingElectricRange",
-    "vehicle.vehicle.travelledDistance",
+    FIELD_STATUS,
+    *FIELD_SOC_CANDIDATES,
+    *FIELD_RANGE_CANDIDATES,
+    *FIELD_ODOMETER_CANDIDATES,
+    FIELD_TARGET_SOC,
+]
+# Manche neueren Fahrzeuge kennen das älteste (erste) SoC-Attribut oder das
+# Lade-Ziel-Attribut nicht mehr. Legt man einen Container mit einem für das
+# Fahrzeug nicht verfügbaren Descriptor an, antwortet die BMW-API dabei
+# offenbar teils mit einem Serverfehler statt einer sauberen 400er. Als
+# Fallback wird die Container-Erstellung ohne diese Attribute wiederholt.
+CONTAINER_DESCRIPTORS_FALLBACK = [
+    d for d in CONTAINER_DESCRIPTORS if d not in (FIELD_SOC_CANDIDATES[0], FIELD_TARGET_SOC)
 ]
 
 
@@ -95,17 +125,35 @@ def _post_json(url: str, token: str, payload: dict) -> dict:
     return response.json()
 
 
-def _create_container(token: str) -> str:
+# Manche neueren Fahrzeuge (z.B. iX1, manche MINI) kennen den Descriptor
+# FIELD_SOC_CANDIDATES[0] (charging.level) im CarData-Portal nicht mehr. Legt
+# man einen Container mit einem für das Fahrzeug nicht verfügbaren Descriptor
+# an, antwortet die BMW-API dabei offenbar teils mit einem Serverfehler statt
+# einer sauberen 400er (s. https://github.com/openWB/core/discussions/3420).
+# Als Fallback wird die Container-Erstellung ohne diesen Descriptor wiederholt.
+def _create_container(token: str, descriptors: List[str] = None, _is_retry: bool = False) -> str:
+    descriptors = descriptors if descriptors is not None else CONTAINER_DESCRIPTORS
     log.warning("BMW CarData: Keine aktiven Container gefunden. Erstelle neuen Container...")
-    result = _post_json(
-        f"{BMW_API_URL}/customers/containers",
-        token,
-        {
-            "name": CONTAINER_NAME,
-            "purpose": CONTAINER_PURPOSE,
-            "technicalDescriptors": CONTAINER_DESCRIPTORS,
-        },
-    )
+    try:
+        result = _post_json(
+            f"{BMW_API_URL}/customers/containers",
+            token,
+            {
+                "name": CONTAINER_NAME,
+                "purpose": CONTAINER_PURPOSE,
+                "technicalDescriptors": descriptors,
+            },
+        )
+    except RequestException as e:
+        if not _is_retry:
+            log.warning(
+                "BMW CarData: Container-Erstellung fehlgeschlagen (%s). Versuche erneut ohne "
+                "'%s'/'%s' (evtl. für dieses Fahrzeug nicht verfügbar).",
+                e, FIELD_SOC_CANDIDATES[0], FIELD_TARGET_SOC,
+            )
+            return _create_container(token, CONTAINER_DESCRIPTORS_FALLBACK, _is_retry=True)
+        raise Exception(f"BMW CarData: Container konnte nicht erstellt werden: {e}")
+
     container_id = result.get("containerId") or result.get("id")
     if not container_id:
         raise Exception(f"BMW CarData: Container konnte nicht erstellt werden: {result}")
@@ -119,7 +167,7 @@ def _fetch_telematic_data(token: str, vin: str, container_id: str):
     return _get_json(url, token)
 
 
-def get_valid_token(cfg: BmwCardataConfiguration) -> str:
+def get_valid_token(cfg: BmwCardataConfiguration, vehicle: int, config: BmwCardataSetup) -> str:
     if not cfg.access_token:
         raise Exception("BMW CarData: Keine Tokens gefunden. Bitte BMW-Kopplung in der UI durchführen.")
 
@@ -146,6 +194,34 @@ def get_valid_token(cfg: BmwCardataConfiguration) -> str:
     cfg.expires_at = time.time() + new.get("expires_in", 3600) - 60
 
     log.info("BMW CarData: Token-Refresh erfolgreich.")
+
+    # Neuen Token zurück in MQTT schreiben – auch für alle anderen BMW CarData
+    # Fahrzeuge mit derselben Client ID damit diese nicht invalidiert werden
+    try:
+        for ev_key, ev in control_data.data.ev_data.items():
+            try:
+                soc_module = ev.soc_module
+                if soc_module is None:
+                    continue
+                other_config = soc_module.vehicle_config
+                if (hasattr(other_config, 'type') and
+                        other_config.type == "bmw_cardata" and
+                        other_config.configuration.client_id == cfg.client_id):
+                    other_config.configuration.access_token = cfg.access_token
+                    other_config.configuration.refresh_token = cfg.refresh_token
+                    other_config.configuration.expires_at = cfg.expires_at
+                    Pub().pub(
+                        f"openWB/set/vehicle/{ev.num}/soc_module/config",
+                        asdict(other_config)
+                    )
+                    log.info(
+                        "BMW CarData: Token in MQTT aktualisiert für Fahrzeug %s.", ev.num
+                    )
+            except Exception as e:
+                log.warning("BMW CarData: Token-Sync für Fahrzeug %s fehlgeschlagen: %s", ev_key, e)
+    except Exception as e:
+        log.warning("BMW CarData: Token-Sync fehlgeschlagen: %s", e)
+
     return cfg.access_token
 
 
@@ -175,7 +251,7 @@ def get_container_id(cfg: BmwCardataConfiguration, token: str) -> str:
     return container_id
 
 
-def fetch_soc(config: BmwCardataSetup) -> CarState:
+def fetch_soc(config: BmwCardataSetup, vehicle: int = 0) -> CarState:
     cfg = config.configuration
 
     if not cfg.client_id:
@@ -183,7 +259,7 @@ def fetch_soc(config: BmwCardataSetup) -> CarState:
     if not cfg.vin:
         raise Exception("BMW CarData: VIN nicht konfiguriert!")
 
-    token = get_valid_token(cfg)
+    token = get_valid_token(cfg, vehicle, config)
     container_id = get_container_id(cfg, token)
 
     try:
@@ -207,20 +283,30 @@ def fetch_soc(config: BmwCardataSetup) -> CarState:
 
     td = raw.get("telematicData", raw)
 
-    soc_raw = _extract_value(td, FIELD_SOC)
-    if soc_raw is None:
-        soc_raw = _extract_value(td, FIELD_SOC_ALT)
-
-    range_raw = _extract_value(td, FIELD_RANGE)
+    soc_raw = _extract_first_value(td, FIELD_SOC_CANDIDATES)
+    range_raw = _extract_first_value(td, FIELD_RANGE_CANDIDATES)
     status = _extract_value(td, FIELD_STATUS)
     odometer_raw = _extract_first_value(td, FIELD_ODOMETER_CANDIDATES)
+    target_soc_raw = _extract_value(td, FIELD_TARGET_SOC)
 
     soc = int(float(soc_raw)) if soc_raw is not None else None
     vehicle_range = int(float(range_raw)) if range_raw is not None else None
     odometer = int(float(odometer_raw)) if odometer_raw is not None else None
+    target_soc = int(float(target_soc_raw)) if target_soc_raw is not None else None
 
     if soc is None:
         raise Exception("BMW CarData: Kein SoC-Wert in API-Antwort gefunden!")
+
+    warning = None
+    if target_soc is not None and target_soc < 100:
+        warning = f"Das Fahrzeug begrenzt die Ladung selbst auf {target_soc}%."
+
+    if vehicle_range is None and cfg.container_id:
+        log.warning(
+            "BMW CarData: Kein Reichweitenwert im Container gefunden – "
+            "Container wird neu erstellt um fehlende Datenpunkte zu ergänzen."
+        )
+        cfg.container_id = ""
 
     log.info(
         "BMW CarData: SoC=%s%%, Reichweite=%s km, Status=%s, Odometer=%s km",
@@ -229,12 +315,12 @@ def fetch_soc(config: BmwCardataSetup) -> CarState:
         status,
         odometer,
     )
-    return CarState(soc=soc, range=vehicle_range, odometer=odometer)
+    return CarState(soc=soc, range=vehicle_range, odometer=odometer, warning=warning)
 
 
 def create_vehicle(vehicle_config: BmwCardataSetup, vehicle: int):
     def updater(vehicle_update_data: VehicleUpdateData) -> CarState:
-        return fetch_soc(vehicle_config)
+        return fetch_soc(vehicle_config, vehicle)
 
     return ConfigurableVehicle(
         vehicle_config=vehicle_config,

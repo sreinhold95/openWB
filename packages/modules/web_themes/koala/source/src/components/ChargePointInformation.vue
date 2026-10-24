@@ -21,92 +21,95 @@
     :columns-to-search="['vehicle', 'name']"
     :row-expandable="compactTable"
     @row-click="onRowClick"
+    :row-color="(row) => row.color"
   >
     <!-- full view table body slots -->
     <template #body-cell-name="slotProps">
-      <q-td :class="[`text-${slotProps.col.align}`, 'max-width-0']">
-        <div class="ellipsis" :title="slotProps.row.name">
+      <div class="row items-center no-wrap">
+        <BaseFaultIcon
+          v-if="faultPresent"
+          :fault-state="slotProps.row.faultState"
+          class="q-mr-xs"
+        />
+        <div class="col ellipsis" @mouseenter="titleIfTruncated">
           {{ slotProps.row.name }}
         </div>
-      </q-td>
+        <q-tooltip v-if="slotProps.row.faultState > 0 && tooltipsEnabled">
+          {{ slotProps.row.faultMessage }}
+        </q-tooltip>
+      </div>
     </template>
     <template #body-cell-vehicle="slotProps">
-      <q-td :class="[`text-${slotProps.col.align}`, 'max-width-0']">
-        <div class="ellipsis" :title="slotProps.row.vehicle">
-          {{ slotProps.row.vehicle }}
-        </div>
-      </q-td>
+      <div class="ellipsis" @mouseenter="titleIfTruncated">
+        {{ slotProps.row.vehicle }}
+      </div>
     </template>
     <template #body-cell-plugged="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        <ChargePointStateIcon :charge-point-id="slotProps.row.id" />
-      </q-td>
+      <ChargePointStateIcon :charge-point-id="slotProps.row.id" />
     </template>
 
     <template #body-cell-chargeMode="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        <ChargePointMode :charge-point-id="slotProps.row.id" />
-      </q-td>
+      <ChargePointMode :charge-point-id="slotProps.row.id" />
     </template>
 
     <template #body-cell-timeCharging="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
+      <ChargePointTimeCharging
+        :charge-point-id="slotProps.row.id"
+        :readonly="true"
+        :toolTip="true"
+        :icon-size="'xs'"
+      />
+    </template>
+
+    <template #body-cell-powerColumn="slotProps">
+      <ChargePointPowerData
+        :power="slotProps.row.power"
+        :phase-number="slotProps.row.phaseNumber"
+        :current="slotProps.row.current"
+        :column-display-format="isSmallScreen"
+      />
+    </template>
+    <template #body-cell-charged="slotProps">
+      {{ slotProps.row.charged }}
+    </template>
+    <template #body-cell-soc="slotProps">
+      {{ slotProps.row.soc }}
+    </template>
+    <!-- compact view table body slots -->
+    <!-- compact view charge point name and vehicle name displayed in one field -->
+    <template #body-cell-nameAndVehicle="slotProps">
+      <div class="row items-center no-wrap">
+        <BaseFaultIcon
+          v-if="faultPresent"
+          :fault-state="slotProps.row.faultState"
+          class="q-mr-xs"
+        />
+        <div class="col">
+          <div class="ellipsis" @mouseenter="titleIfTruncated">
+            {{ slotProps.row.name }}
+          </div>
+          <div class="ellipsis text-caption" @mouseenter="titleIfTruncated">
+            {{ slotProps.row.vehicle }}
+          </div>
+        </div>
+        <q-tooltip v-if="slotProps.row.faultState > 0 && tooltipsEnabled">
+          {{ slotProps.row.faultMessage }}
+        </q-tooltip>
+      </div>
+    </template>
+
+    <!-- compact view charge point charge mode, plug status and time charging displayed in one field -->
+    <template #body-cell-modePluggedTimeCharging="slotProps">
+      <div class="items-center">
+        <ChargePointMode :charge-point-id="slotProps.row.id" />
+        <ChargePointStateIcon :charge-point-id="slotProps.row.id" />
         <ChargePointTimeCharging
           :charge-point-id="slotProps.row.id"
           :readonly="true"
           :toolTip="true"
           :icon-size="'xs'"
         />
-      </q-td>
-    </template>
-
-    <template #body-cell-powerColumn="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        <ChargePointPowerData
-          :power="slotProps.row.power"
-          :phase-number="slotProps.row.phaseNumber"
-          :current="slotProps.row.current"
-          :column-display-format="isSmallScreen"
-        />
-      </q-td>
-    </template>
-    <template #body-cell-charged="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        {{ slotProps.row.charged }}
-      </q-td>
-    </template>
-    <template #body-cell-soc="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        {{ slotProps.row.soc }}
-      </q-td>
-    </template>
-    <!-- compact view table body slots -->
-    <!-- compact view charge point name and vehicle name displayed in one field -->
-    <template #body-cell-nameAndVehicle="slotProps">
-      <q-td :class="[`text-${slotProps.col.align}`, 'max-width-0']">
-        <div class="ellipsis" :title="slotProps.row.name">
-          {{ slotProps.row.name }}
-        </div>
-        <div class="ellipsis text-caption" :title="slotProps.row.vehicle">
-          {{ slotProps.row.vehicle }}
-        </div>
-      </q-td>
-    </template>
-
-    <!-- compact view charge point charge mode, plug status and time charging displayed in one field -->
-    <template #body-cell-modePluggedTimeCharging="slotProps">
-      <q-td auto-width :class="`text-${slotProps.col.align}`">
-        <div class="items-center">
-          <ChargePointMode :charge-point-id="slotProps.row.id" />
-          <ChargePointStateIcon :charge-point-id="slotProps.row.id" />
-          <ChargePointTimeCharging
-            :charge-point-id="slotProps.row.id"
-            :readonly="true"
-            :toolTip="true"
-            :icon-size="'xs'"
-          />
-        </div>
-      </q-td>
+      </div>
     </template>
 
     <!-- Pass expansion row data to BaseTable.vue -->
@@ -158,10 +161,14 @@ import ChargePointStateIcon from 'src/components/ChargePointStateIcon.vue';
 import ChargePointMode from './ChargePointMode.vue';
 import ChargePointTimeCharging from './ChargePointTimeCharging.vue';
 import ChargePointPowerData from './ChargePointPowerData.vue';
+import BaseFaultIcon from './BaseFaultIcon.vue';
 import {
   ColumnConfiguration,
   ChargePointRow,
 } from 'src/components/models/table-model';
+import { useTable } from 'src/composables/useTable';
+
+const { tooltipsEnabled, compactTable, titleIfTruncated } = useTable();
 
 const mqttStore = useMqttStore();
 const { chargeModes } = useChargeModes();
@@ -172,8 +179,11 @@ const cardViewBreakpoint = computed(
 const searchInputVisible = computed(
   () => mqttStore.themeConfiguration?.chargePoint_table_search_input_field,
 );
+
+const faultPresent = computed(() =>
+  chargePointIds.value.some((id) => mqttStore.chargePointFaultState(id) > 0),
+);
 const isSmallScreen = computed(() => Screen.lt.sm);
-const compactTable = computed(() => Screen.lt.md);
 const selectedChargePointId = ref<number | null>(null);
 const modalChargePointCardVisible = ref(false);
 const filter = ref('');
@@ -204,6 +214,10 @@ const tableRowData = computed<(id: number) => ChargePointRow>(() => {
     // typecasting necessary as chargePointChargingCurrent has a union type in store and needs to be narrowed to string
     const current = mqttStore.chargePointChargingCurrent(id) as string;
     const powerColumn = '';
+    const faultState = mqttStore.chargePointFaultState(id);
+    const faultMessage = mqttStore.chargePointFaultMessage(id) ?? '';
+    const color =
+      mqttStore.chargePointColor(id) || 'var(--q-charge-point-stroke)';
     return {
       id,
       name,
@@ -217,28 +231,42 @@ const tableRowData = computed<(id: number) => ChargePointRow>(() => {
       current,
       powerColumn,
       charged,
+      faultState,
+      faultMessage,
+      color,
     };
   };
 });
 
 const columnConfig: ColumnConfiguration[] = [
-  { field: 'name', label: 'Ladepunkt' },
-  { field: 'vehicle', label: 'Fahrzeug' },
-  { field: 'plugged', label: 'Status', align: 'center' },
-  { field: 'chargeMode', label: 'Lademodus' },
-  { field: 'timeCharging', label: 'Zeitladen', align: 'center' },
-  { field: 'powerColumn', label: 'Leistung', align: 'right' },
-  { field: 'charged', label: 'Geladen', align: 'right' },
-  { field: 'soc', label: 'Ladestand', align: 'right' },
+  { field: 'name', label: 'Ladepunkt', shrink: true },
+  { field: 'vehicle', label: 'Fahrzeug', autoWidth: true },
+  { field: 'plugged', label: 'Status', align: 'center', autoWidth: true },
+  { field: 'chargeMode', label: 'Lademodus', autoWidth: true },
+  {
+    field: 'timeCharging',
+    label: 'Zeitladen',
+    align: 'center',
+    autoWidth: true,
+  },
+  { field: 'powerColumn', label: 'Leistung', align: 'right', autoWidth: true },
+  { field: 'charged', label: 'Geladen', align: 'right', autoWidth: true },
+  { field: 'soc', label: 'Ladestand', align: 'right', autoWidth: true },
 ];
 
 const columnConfigCompact: ColumnConfiguration[] = [
-  { field: 'nameAndVehicle', label: 'Ladepunkt' },
-  { field: 'modePluggedTimeCharging', label: 'Lademodus', align: 'center' },
+  { field: 'nameAndVehicle', label: 'Ladepunkt', shrink: true },
+  {
+    field: 'modePluggedTimeCharging',
+    label: 'Lademodus',
+    align: 'center',
+    autoWidth: true,
+  },
   {
     field: 'powerColumn',
     label: 'Leistung',
     align: 'center',
+    autoWidth: true,
   },
   { field: 'charged', label: 'Geladen', align: 'right', expandField: true },
   { field: 'soc', label: 'Ladestand', align: 'right', expandField: true },
@@ -256,9 +284,3 @@ const onRowClick = (row: ChargePointRow) => {
   modalChargePointCardVisible.value = true;
 };
 </script>
-
-<style scoped lang="scss">
-.max-width-0 {
-  max-width: 0;
-}
-</style>

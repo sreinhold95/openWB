@@ -4,7 +4,7 @@ import pytest
 
 from control import data
 from control.algorithm import surplus_controlled
-from control.algorithm.filter_chargepoints import get_chargepoints_with_required_current_by_chargemode
+from control.algorithm.filter_chargepoints import get_loads_by_chargemodes
 from control.algorithm.surplus_controlled import (CONSIDERED_CHARGE_MODES_PV_ONLY, SurplusControlled,
                                                   limit_adjust_current)
 from control.chargemode import Chargemode
@@ -12,7 +12,15 @@ from control.chargepoint.chargepoint import Chargepoint, ChargepointData
 from control.chargepoint.chargepoint_data import Get, Set
 from control.chargepoint.chargepoint_template import CpTemplate
 from control.chargepoint.control_parameter import ControlParameter
+from control.counter_all.counter_all import CounterAll
 from control.ev.ev import Ev
+from control.consumer.consumer import Consumer
+from control.limiting_value import LimitingValue, LoadmanagementLimit
+
+
+@pytest.fixture(autouse=True)
+def init_data_store():
+    data.data_init(Mock())
 
 
 @pytest.fixture(autouse=True)
@@ -30,27 +38,45 @@ def mock_cp3() -> Chargepoint:
     return Chargepoint(3, None)
 
 
-@pytest.mark.parametrize("feed_in_limit_1, feed_in_limit_2, feed_in_limit_3, expected_sorted",
-                         [pytest.param(True, True, True, ([mock_cp1, mock_cp2, mock_cp3], [])),
-                          pytest.param(True, False, True, ([mock_cp1, mock_cp3], [mock_cp2])),
-                          pytest.param(False, False, False, ([], [mock_cp1, mock_cp2, mock_cp3]))])
-def test_filter_by_feed_in_limit(feed_in_limit_1: bool,
-                                 feed_in_limit_2: bool,
-                                 feed_in_limit_3: bool,
-                                 expected_sorted: int):
-    # setup
-    def setup_cp(cp: Chargepoint, feed_in_limit: bool) -> Chargepoint:
-        cp.data = ChargepointData()
-        cp.data.set.charge_template.data.chargemode.pv_charging.feed_in_limit = feed_in_limit
-        return cp
+@pytest.fixture(autouse=True)
+def mock_data() -> None:
+    data.data_init(Mock())
+    data.data.counter_all_data = CounterAll()
 
-    cp1 = setup_cp(mock_cp1, feed_in_limit_1)
-    cp2 = setup_cp(mock_cp2, feed_in_limit_2)
-    cp3 = setup_cp(mock_cp3, feed_in_limit_3)
-    # execution
-    cp_with_feed_in, cp_without_feed_in = SurplusControlled().filter_by_feed_in_limit([cp1, cp2, cp3])
-    # evaluation
-    assert (cp_with_feed_in, cp_without_feed_in) == expected_sorted
+
+@pytest.mark.parametrize(
+    "current, set_current, required_current, limit, expected_message",
+    [
+        pytest.param(13.04, 6, 13.043478260869565,
+                     LoadmanagementLimit(None, None), None, id="reported-consumer-rounding"),
+        pytest.param(12, 6, 13.04, LoadmanagementLimit(None, None), None,
+                     id="no-limit-reason"),
+        pytest.param(13.04, 6, 13.043478260869565,
+                     LoadmanagementLimit(" current limit", LimitingValue.CURRENT), None,
+                     id="rounded-required-current"),
+        pytest.param(13.04, 13.043478260869565, 16,
+                     LoadmanagementLimit(" current limit", LimitingValue.CURRENT), None,
+                     id="rounded-unchanged-current"),
+        pytest.param(12, 6, 13.04,
+                     LoadmanagementLimit(" power limit", LimitingValue.POWER), None,
+                     id="normal-pv-power-limit"),
+        pytest.param(12, 6, 13.04,
+                     LoadmanagementLimit(" current limit", LimitingValue.CURRENT),
+                     "Es kann nicht mit der vorgegebenen Stromstärke geladen werden current limit",
+                     id="actual-current-limit"),
+        pytest.param(12, None, 13.04,
+                     LoadmanagementLimit(" current limit", LimitingValue.CURRENT),
+                     "Es kann nicht mit der vorgegebenen Stromstärke geladen werden current limit",
+                     id="no-previous-set-current"),
+    ])
+def test_set_loadmanagement_message(current, set_current, required_current, limit, expected_message):
+    consumer = Consumer(27)
+    consumer.data.set.current = set_current
+    consumer.data.control_parameter.required_currents = [required_current, 0, 0]
+
+    SurplusControlled()._set_loadmangement_message(current, limit, consumer)
+
+    assert consumer.data.get.state_str == expected_message
 
 
 @pytest.mark.parametrize("new_current, expected_current",
@@ -77,23 +103,26 @@ def test_limit_adjust_current(new_current: float, expected_current: float, monke
                              pytest.param(1, [10, 0, 0], [16, 0, 0]),
                              pytest.param(1, [0, 15, 0], [0, 16, 0]),
                              pytest.param(3, [10]*3, [16]*3),
+                             pytest.param(3, [0]*3, [0]*3),
                          ])
 def test_set_required_current_to_max(phases: int,
                                      required_currents: List[float],
                                      expected_currents: List[int],
-                                     monkeypatch):
+                                     monkeypatch,
+                                     mock_cp1: Chargepoint):
     # setup
     ev = Ev(0)
     mock_cp1.data = ChargepointData(set=Set(charging_ev_data=ev),
                                     control_parameter=ControlParameter(phases=phases,
+                                                                       required_current=max(required_currents),
                                                                        required_currents=required_currents))
     mock_cp1.template = CpTemplate()
     mock_get_chargepoints_surplus_controlled = Mock(return_value=[mock_cp1])
-    monkeypatch.setattr(surplus_controlled, "get_chargepoints_with_required_current_by_chargemode",
+    monkeypatch.setattr(surplus_controlled, "filter_loads_by_chargemodes",
                         mock_get_chargepoints_surplus_controlled)
 
     # execution
-    SurplusControlled().set_required_current_to_max()
+    SurplusControlled().set_required_current_to_max([mock_cp1])
 
     # evaluation
     assert mock_cp1.data.control_parameter.required_currents == expected_currents
@@ -106,7 +135,12 @@ def test_set_required_current_to_max(phases: int,
         pytest.param(13, 13, 13, id="Auto lädt mit Soll-Stromstärke"),
         pytest.param(12.5, 12.5, 12.0, id="Auto lädt mit 0.5A Abweichung von der Soll-Stromstärke"),
         pytest.param(11.8, 11.8, 10.600000000000001, id="Auto lädt mit mehr als Soll-Stromstärke"),
-        pytest.param(14.2, 14.2, 15.399999999999999, id="Auto lädt mit weniger als Soll-Stromstärke"),
+        pytest.param(14.2, 14.2, 15.399999999999999,
+                     id="Auto lädt mit weniger als Soll-Stromstärke, "
+                        "diff kleiner als max_current_change, aber EVSE-Begrenzung ist nicht erreicht."),
+        pytest.param(14.5, 14.2, 15.7,
+                     id="Auto lädt mit weniger als Soll-Stromstärke, "
+                        "diff größer als max_current_change, aber EVSE-Begrenzung ist nicht erreicht."),
         pytest.param(15, 15, 16,
                      id="Auto lädt mit weniger als Soll-Stromstärke, aber EVSE-Begrenzung ist erreicht.")
     ])
@@ -129,27 +163,35 @@ def test_add_unused_evse_current(evse_current: float,
 
 
 @pytest.mark.parametrize(
-    "submode_1, submode_2, expected_chargepoints",
+    "submode_1, submode_2, expected_cp_keys",
     [
-        pytest.param(Chargemode.PV_CHARGING, Chargemode.PV_CHARGING, [mock_cp1, mock_cp2]),
-        pytest.param(Chargemode.INSTANT_CHARGING, Chargemode.PV_CHARGING, [mock_cp2]),
+        pytest.param(Chargemode.PV_CHARGING, Chargemode.PV_CHARGING, ["cp1", "cp2"]),
+        pytest.param(Chargemode.INSTANT_CHARGING, Chargemode.PV_CHARGING, ["cp2"]),
         pytest.param(Chargemode.INSTANT_CHARGING, Chargemode.INSTANT_CHARGING, []),
     ])
 def test_get_chargepoints_submode_pv_charging(submode_1: Chargemode,
                                               submode_2: Chargemode,
-                                              expected_chargepoints: List[Chargepoint]):
+                                              expected_cp_keys: List[str],
+                                              mock_cp1: Chargepoint,
+                                              mock_cp2: Chargepoint):
     # setup
     def setup_cp(cp: Chargepoint, submode: str) -> Chargepoint:
-        cp.data.set.charging_ev_data = Ev(0)
+        cp.data = ChargepointData()
+        cp.data.set.charging_ev_data = Ev(cp.num)
+        cp.data.config.ev = cp.num
         cp.data.control_parameter.chargemode = Chargemode.PV_CHARGING
         cp.data.control_parameter.submode = submode
         cp.data.control_parameter.required_current = 6
         return cp
     data.data.cp_data = {"cp1": setup_cp(mock_cp1, submode_1),
                          "cp2": setup_cp(mock_cp2, submode_2)}
+    expected_chargepoints = [data.data.cp_data[key] for key in expected_cp_keys]
+    data.data.counter_all_data = CounterAll()
+    data.data.counter_all_data.data.get.loadmanagement_prios = [{"type": "vehicle", "id": 1},
+                                                                {"type": "vehicle", "id": 2}]
 
     # evaluation
-    chargepoints = get_chargepoints_with_required_current_by_chargemode(CONSIDERED_CHARGE_MODES_PV_ONLY)
+    chargepoints = get_loads_by_chargemodes(CONSIDERED_CHARGE_MODES_PV_ONLY)
 
     # assertion
     assert chargepoints == expected_chargepoints

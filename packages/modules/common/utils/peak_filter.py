@@ -1,6 +1,6 @@
 import logging
 from control import data
-from typing import Optional
+from typing import Optional, Tuple
 
 from modules.common.fault_state import FaultState
 from modules.common.component_type import ComponentType
@@ -32,6 +32,9 @@ class PeakFilter:
         elif self.component_type == ComponentType.BAT:
             bat = data.data.bat_data[f"bat{self.component_id}"]
             max_power = bat.data.config.max_power
+        elif self.component_type == ComponentType.CONSUMER:
+            consumer = data.data.consumer_data[f"consumer{self.component_id}"]
+            max_power = consumer.data.config.max_power
         else:
             raise ValueError(f"Unsupported component type {self.component_type!r} in PeakFilter")
         # prüfe Leistung und importierte/exportierte Energie auf Plausibilität
@@ -53,27 +56,34 @@ class PeakFilter:
             exported: Optional[float] = None,
     ) -> tuple[Optional[float], Optional[float]]:
         if max_power > 0:
+            # maximal mögliche Energiemenge in 50 Jahren:
+            # max. Leistung × 24 h/Tag × 365 Tage/Jahr × 50 Jahre
+            max_energy = max_power * 24 * 365 * 50
             # Die erlaubte Abweichung ist doppelt so groß wie die mögliche
             # Energiemenge pro Intervall bei maximaler Leistung
             control_interval = data.data.general_data.data.control_interval
             allowed_deviation = 2 * (control_interval / 3600) * max_power
 
-            imp = self.check_total_energy(imported, self.imported, allowed_deviation)
-            self.imported = imported
+            checked_imp, prev_imp = self.check_total_energy(imported, self.imported, allowed_deviation, max_energy)
+            self.imported = prev_imp
 
-            exp = self.check_total_energy(exported, self.exported, allowed_deviation)
-            self.exported = exported
-            return imp, exp
+            checked_exp, prev_exp = self.check_total_energy(exported, self.exported, allowed_deviation, max_energy)
+            self.exported = prev_exp
+            return checked_imp, checked_exp
         return imported, exported
 
     def check_total_energy(
         self,
         total_energy: Optional[float],
         previous_total_energy: Optional[float],
-        allowed_deviation: float
-    ) -> Optional[float]:
+        allowed_deviation: float,
+        max_energy: float
+    ) -> Tuple[Optional[float], Optional[float]]:
         if total_energy is not None:
-            if previous_total_energy is None:
+            if total_energy > max_energy:
+                log.debug(f"PeakFilter: Unplausibler Zählerwert: {total_energy / 1000}kWh. "
+                          f"Maximal mögliche Energiemenge in 50 Jahren: {max_energy / 1000}kWh.")
+            elif previous_total_energy is None:
                 if allowed_deviation > 0:
                     self.fault_state.warning("PeakFilter: Vorheriger Wert None (Startup), "
                                              f"aktueller Zählerwert: {total_energy / 1000 }kWh. "
@@ -82,11 +92,33 @@ class PeakFilter:
                 log.debug(f"PeakFilter: Unplausibler Zählerwert: {total_energy / 1000}kWh. "
                           f"Differenz zum vorherigen Wert: {total_energy - previous_total_energy}Wh. "
                           f"erlaubte Differenz: {round(allowed_deviation, 2)}Wh.")
-                self.fault_state.warning(f"Peakfilter: {total_energy / 1000}kWh. "
-                                         "Die Energie erscheint höher, als laut Anlagenkonfiguration plausibel "
-                                         "ist. Erneute Prüfung im nächsten Regelintervall.")
+            elif (total_energy - previous_total_energy) < 0:
+                if previous_total_energy > max_energy:
+                    log.debug("PeakFilter: Erholung nach unplausibel hohem Zählerwert erkannt. "
+                              f"Vorheriger Wert: {previous_total_energy / 1000}kWh über dem 50-Jahres-Limit "
+                              f"({max_energy / 1000}kWh). Aktueller Wert {total_energy / 1000}kWh wird "
+                              "verworfen und als neue Vergleichsbasis verwendet.")
+                    checked_energy = None
+                    prev_energy = total_energy
+                    return checked_energy, prev_energy
+                log.debug(f"PeakFilter: Unplausibler Rückwärtssprung: {total_energy / 1000}kWh. "
+                          f"Vorherigen Wert: {previous_total_energy / 1000}kWh. "
+                          "Höchststand beibehalten.")
+                checked_energy = previous_total_energy
+                prev_energy = previous_total_energy
+                return checked_energy, prev_energy
             else:
                 log.debug(f"PeakFilter: Zählerwert: {total_energy}Wh innerhalb der zulässigen Grenzen. "
                           f"Differenz zum vorherigen Wert: {total_energy - previous_total_energy}Wh.")
-                return total_energy
-        return None
+                checked_energy = total_energy
+                prev_energy = total_energy
+                return checked_energy, prev_energy
+            # wenn der Peak-Filter greift, Zählerstand nicht aktualisieren (None).
+            # Zählerstand merken, damit immer nur die zwei letzten verglichen werden, um Vorwärtssprünge abzubilden.
+            checked_energy = None
+            prev_energy = total_energy
+            return checked_energy, prev_energy
+        else:
+            checked_energy = None
+            prev_energy = None
+            return checked_energy, prev_energy

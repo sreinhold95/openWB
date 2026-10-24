@@ -4,15 +4,17 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 import threading
+from typing import Optional, Union
 import typing_extensions
 import re
 import io
 import os
 import shutil
 
+from helpermodules.constants import RAMDISK_PATH
+
 FORMAT_STR_DETAILED = '%(asctime)s - {%(name)s:%(lineno)s} - {%(levelname)s:%(threadName)s} - %(message)s'
 FORMAT_STR_SHORT = '%(asctime)s - %(message)s'
-RAMDISK_PATH = str(Path(__file__).resolve().parents[2]) + '/ramdisk/'
 PERSISTENT_LOG_PATH = str(Path(__file__).resolve().parents[2]) + '/data/log/'
 NUMBER_OF_LOGFILES = 3
 
@@ -25,9 +27,12 @@ REDACTION_PATTERNS = [
     (r'"{field}":\s*"(.*?)"', r'"{field}": "***REDACTED***"'),  # "field": "value", JSON formatted data
     (r'\'{field}\':\s*\'(.*?)\'', r"'{field}': '***REDACTED***'")  # 'field': 'value', JSON formatted data
 ]
+# Credentials in a URL (scheme://user:password@host/) carry no field name for REDACTION_PATTERNS
+# to key on. The user name is kept, it is useful when diagnosing authentication problems.
+URL_CREDENTIALS_PATTERN = (r'(\w+://[^/\s:@]*):[^/\s]+@', r'\1:***REDACTED***@')
 
 
-def redact_sensitive_info(message: str, additional_fields: list = None) -> str:
+def redact_sensitive_info(message: str, additional_fields: Optional[list] = None) -> str:
     """
     Redacts sensitive information from the given message.
 
@@ -36,6 +41,9 @@ def redact_sensitive_info(message: str, additional_fields: list = None) -> str:
     redacted are defined in the KNOWN_SENSITIVE_FIELDS list. The function uses
     predefined patterns to identify and replace the sensitive information.
 
+    Passwords given as URL credentials (scheme://user:password@host/) are redacted as well,
+    those carry no field name to key on.
+
     Args:
         message (str): The log message to be redacted.
 
@@ -43,6 +51,7 @@ def redact_sensitive_info(message: str, additional_fields: list = None) -> str:
         str: The redacted log message.
     """
     fields_to_redact = KNOWN_SENSITIVE_FIELDS + (additional_fields or [])
+    message = re.sub(URL_CREDENTIALS_PATTERN[0], URL_CREDENTIALS_PATTERN[1], message)
     for field in fields_to_redact:
         for pattern, replacement in REDACTION_PATTERNS:
             pattern = pattern.replace('{field}', field)
@@ -155,8 +164,7 @@ class InMemoryLogHandler(logging.Handler):
         self.line_count = 0
 
 
-def clear_in_memory_log_handler(logger_name: str = None) -> None:
-    global in_memory_log_handlers
+def clear_in_memory_log_handler(logger_name: Optional[str] = None) -> None:
     if logger_name is None:
         # Clear all in-memory log handlers
         for handler in in_memory_log_handlers.values():
@@ -167,10 +175,8 @@ def clear_in_memory_log_handler(logger_name: str = None) -> None:
             in_memory_log_handlers[logger_name].clear()
 
 
-def write_logs_to_file(logger_name: str = None) -> None:
-    global in_memory_log_handlers
-
-    def rotate_logs(base_path: str, name: str):
+def write_logs_to_file(logger_name: Optional[str] = None) -> None:
+    def rotate_logs(base_path: Union[str, os.PathLike], name: str):
         # Rotate the log files
         for i in range(NUMBER_OF_LOGFILES-1, 0, -1):
             src = os.path.join(base_path, f'{name}.previous{i}.log')
@@ -182,7 +188,7 @@ def write_logs_to_file(logger_name: str = None) -> None:
         if os.path.exists(current_log):
             shutil.move(current_log, os.path.join(base_path, f'{name}.previous1.log'))
 
-    def combine_logs(base_path: str, name: str):
+    def combine_logs(base_path: Union[str, os.PathLike], name: str):
         latest_log_path = os.path.join(base_path, f'{name}.latest.log')
         with open(latest_log_path, 'w') as latest_log:
             for i in range(NUMBER_OF_LOGFILES-1, -1, -1):
@@ -224,16 +230,43 @@ def write_logs_to_file(logger_name: str = None) -> None:
                         f.write(logs)
 
 
+# The totals subprocess needs its own log file, including messages from process_log.
+# In the main process, process_log must keep propagating to main log.
+def setup_generate_totals_logging(include_process_log: bool = False) -> None:
+    generate_totals_log = logging.getLogger("generate_totals")
+    generate_totals_log.setLevel(logging.DEBUG)
+    generate_totals_log.propagate = False
+    RAMDISK_PATH.mkdir(parents=True, exist_ok=True)
+    handler = next(
+        (handler for handler in generate_totals_log.handlers
+         if isinstance(handler, RotatingFileHandler)
+         and handler.baseFilename == str(RAMDISK_PATH / 'generate_totals.log')),
+        None,
+    )
+    if handler is None:
+        handler = RotatingFileHandler(RAMDISK_PATH / 'generate_totals.log', maxBytes=5 * 1000000, backupCount=1)
+        handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
+        handler.addFilter(RedactingFilter())
+        generate_totals_log.addHandler(handler)
+
+    if include_process_log:
+        process_log = logging.getLogger("helpermodules.measurement_logging.process_log")
+        process_log.setLevel(logging.DEBUG)
+        process_log.propagate = False
+        if handler not in process_log.handlers:
+            process_log.addHandler(handler)
+
+
 def setup_logging() -> None:
-    def mb_to_bytes(megabytes: int) -> int:
-        return megabytes * 1000000
+    def mb_to_bytes(megabytes: float) -> int:
+        return int(megabytes * 1000000)
 
     global in_memory_log_handlers
     in_memory_log_handlers = {name: InMemoryLogHandler() for name in ["main", "internal_chargepoint"]}
     # to do: add smarthome and soc to in_memory_log_handlers, needs updates in individual thread calls
 
     # Main logger
-    main_file_handler = RotatingFileHandler(RAMDISK_PATH + 'main.log', maxBytes=mb_to_bytes(5), backupCount=4)
+    main_file_handler = RotatingFileHandler(RAMDISK_PATH / 'main.log', maxBytes=mb_to_bytes(5), backupCount=4)
     main_file_handler.setFormatter(logging.Formatter(FORMAT_STR_DETAILED))
     main_file_handler.addFilter(RedactingFilter())
     in_memory_log_handlers["main"] = InMemoryLogHandler(main_file_handler)
@@ -247,7 +280,7 @@ def setup_logging() -> None:
     chargelog_log = logging.getLogger("chargelog")
     chargelog_log.propagate = False
     chargelog_file_handler = RotatingFileHandler(
-        RAMDISK_PATH + 'chargelog.log', maxBytes=mb_to_bytes(2), backupCount=1)
+        RAMDISK_PATH / 'chargelog.log', maxBytes=mb_to_bytes(2), backupCount=1)
     chargelog_file_handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
     chargelog_file_handler.addFilter(RedactingFilter())
     chargelog_log.addHandler(chargelog_file_handler)
@@ -264,10 +297,21 @@ def setup_logging() -> None:
     # MQTT logger
     mqtt_log = logging.getLogger("mqtt")
     mqtt_log.propagate = False
-    mqtt_file_handler = RotatingFileHandler(RAMDISK_PATH + 'mqtt.log', maxBytes=mb_to_bytes(3), backupCount=1)
+    mqtt_file_handler = RotatingFileHandler(RAMDISK_PATH / 'mqtt.log', maxBytes=mb_to_bytes(3), backupCount=1)
     mqtt_file_handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
     mqtt_file_handler.addFilter(RedactingFilter())
     mqtt_log.addHandler(mqtt_file_handler)
+
+    # Forecast logger
+    forecast_log = logging.getLogger("forecast")
+    forecast_log.propagate = False
+    forecast_file_handler = RotatingFileHandler(RAMDISK_PATH / 'forecast.log', maxBytes=mb_to_bytes(1), backupCount=1)
+    forecast_file_handler.setFormatter(logging.Formatter(FORMAT_STR_DETAILED))
+    forecast_file_handler.addFilter(RedactingFilter())
+    forecast_log.addHandler(forecast_file_handler)
+
+    # Totals generation logger
+    setup_generate_totals_logging()
 
     # Steuve control command logger
     steuve_control_command_log = logging.getLogger("steuve_control_command")
@@ -281,7 +325,7 @@ def setup_logging() -> None:
     garbage_collector_log = logging.getLogger("garbage_collector")
     garbage_collector_log.propagate = False
     garbage_collector_file_handler = RotatingFileHandler(
-        RAMDISK_PATH + 'garbage_collector.log', maxBytes=mb_to_bytes(0.5), backupCount=1)
+        RAMDISK_PATH / 'garbage_collector.log', maxBytes=mb_to_bytes(0.5), backupCount=1)
     garbage_collector_file_handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
     garbage_collector_log.addHandler(garbage_collector_file_handler)
 
@@ -289,19 +333,19 @@ def setup_logging() -> None:
     tracemalloc_log = logging.getLogger("tracemalloc")
     tracemalloc_log.propagate = False
     tracemalloc_file_handler = RotatingFileHandler(
-        RAMDISK_PATH + 'tracemalloc.log', maxBytes=mb_to_bytes(0.5), backupCount=1)
+        RAMDISK_PATH / 'tracemalloc.log', maxBytes=mb_to_bytes(0.5), backupCount=1)
     tracemalloc_file_handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
     tracemalloc_log.addHandler(tracemalloc_file_handler)
 
     # Smarthome logger
-    smarthome_log_handler = RotatingFileHandler(RAMDISK_PATH + 'smarthome.log', maxBytes=mb_to_bytes(1), backupCount=1)
+    smarthome_log_handler = RotatingFileHandler(RAMDISK_PATH / 'smarthome.log', maxBytes=mb_to_bytes(1), backupCount=1)
     smarthome_log_handler.setFormatter(logging.Formatter(FORMAT_STR_SHORT))
     smarthome_log_handler.addFilter(functools.partial(filter_pos, "smarthome"))
     smarthome_log_handler.addFilter(RedactingFilter())
     logging.getLogger().addHandler(smarthome_log_handler)
 
     # SoC logger
-    soc_log_handler = RotatingFileHandler(RAMDISK_PATH + 'soc.log', maxBytes=mb_to_bytes(2), backupCount=1)
+    soc_log_handler = RotatingFileHandler(RAMDISK_PATH / 'soc.log', maxBytes=mb_to_bytes(2), backupCount=1)
     soc_log_handler.setFormatter(logging.Formatter(FORMAT_STR_DETAILED))
     soc_log_handler.addFilter(functools.partial(filter_pos, "soc"))
     soc_log_handler.addFilter(RedactingFilter())
@@ -311,7 +355,7 @@ def setup_logging() -> None:
     logging.getLogger().addHandler(in_memory_log_handlers["soc"])
 
     # Internal chargepoint logger
-    internal_chargepoint_log_handler = RotatingFileHandler(RAMDISK_PATH + 'internal_chargepoint.log',
+    internal_chargepoint_log_handler = RotatingFileHandler(RAMDISK_PATH / 'internal_chargepoint.log',
                                                            maxBytes=mb_to_bytes(1),
                                                            backupCount=1)
     internal_chargepoint_log_handler.setFormatter(logging.Formatter(FORMAT_STR_DETAILED))
@@ -325,7 +369,7 @@ def setup_logging() -> None:
     # urllib3 logger
     urllib3_log = logging.getLogger("urllib3.connectionpool")
     urllib3_log.propagate = True
-    urllib3_file_handler = RotatingFileHandler(RAMDISK_PATH + 'soc.log', maxBytes=mb_to_bytes(2), backupCount=1)
+    urllib3_file_handler = RotatingFileHandler(RAMDISK_PATH / 'soc.log', maxBytes=mb_to_bytes(2), backupCount=1)
     urllib3_file_handler.setFormatter(logging.Formatter(FORMAT_STR_DETAILED))
     urllib3_file_handler.addFilter(RedactingFilter())
     urllib3_file_handler.addFilter(functools.partial(filter_pos, "soc"))
@@ -335,7 +379,7 @@ def setup_logging() -> None:
     logging.getLogger("uModbus").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
 
-    thread_errors_path = Path(RAMDISK_PATH+"thread_errors.log")
+    thread_errors_path = RAMDISK_PATH / "thread_errors.log"
     with thread_errors_path.open("w") as f:
         f.write("")
 
@@ -346,9 +390,9 @@ def setup_logging() -> None:
         with open(thread_errors_path, "a") as f:
             f.write("Uncaught exception in thread:\n")
             f.write(f"Type: {args.exc_type}\n")
-            f.write(f"Value: {args.exc_value}\n")
+            f.write(redact_sensitive_info(f"Value: {args.exc_value}\n"))
             import traceback
-            traceback.print_tb(args.exc_traceback, file=f)
+            f.write(redact_sensitive_info("".join(traceback.format_tb(args.exc_traceback))))
     threading.excepthook = threading_excepthook
 
     def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
@@ -358,8 +402,9 @@ def setup_logging() -> None:
         with open(thread_errors_path, "a") as f:
             f.write("Uncaught exception:\n")
             f.write(f"Type: {exc_type}\n")
-            f.write(f"Value: {exc_value}\n")
-            f.write(f"Traceback:{exc_traceback}\n")
+            f.write(redact_sensitive_info(f"Value: {exc_value}\n"))
+            import traceback
+            f.write(redact_sensitive_info("".join(traceback.format_tb(exc_traceback))))
     sys.excepthook = handle_unhandled_exception
 
 

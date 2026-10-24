@@ -8,7 +8,7 @@ from helpermodules.timecheck import create_timestamp
 from modules.common.abstract_device import DeviceDescriptor
 from modules.common.abstract_io import AbstractIoAction
 from modules.common.utils.component_parser import get_component_name_by_id, get_io_name_by_id
-from modules.io_actions.common import check_fault_state_io_device
+from modules.io_actions.common import check_fault_state_io_device, get_power_log_message
 from modules.io_actions.generator_systems.stepwise_control.config import StepwiseControlSetup
 
 control_command_log = logging.getLogger("steuve_control_command")
@@ -27,26 +27,35 @@ class StepwiseControlIo(AbstractIoAction):
             for device in self.config.configuration.devices
             if device["type"] == "inverter"
         ]
-        assigned_outputs = [
-            f"{device['id']}/{device['digital_output']}"
-            for device in self.config.configuration.devices
-            if device["type"] == "io"
-        ]
+        self.__unique_outputs = []
+        for pattern in self.config.configuration.output_pattern:
+            for key in pattern["matrix"].keys():
+                if key not in self.__unique_outputs:
+                    self.__unique_outputs.append(key)
         with ModifyLoglevelContext(control_command_log, logging.DEBUG):
             # Log the configuration details
             # We cannot use configured names here, as the devices are not yet initialized
             # and thus the names are not available.
-            control_command_log.info(
+            info_message = (
                 f"Stufenweise Steuerung von EZA: I/O-Gerät: {self.config.configuration.io_device}, "
                 f"Überwachte digitale Eingänge: {self.__unique_inputs}, "
-                f"zugeordnete Erzeugungsanlagen: {assigned_inverters} "
-                f"zugeordnete IO-Ausgänge: {assigned_outputs} "
-                "Die Begrenzung muss in den EZA vorgenommen werden!"
+                f"zugeordnete Erzeugungsanlagen: {assigned_inverters}, "
+                f"zugeordnete IO-Ausgänge: {self.__unique_outputs}"
             )
+            if len(self.__unique_outputs) == 0:
+                info_message += ", Die Begrenzung muss in den EZA vorgenommen werden!"
+            control_command_log.info(info_message)
         super().__init__()
 
     def setup(self) -> None:
         with ModifyLoglevelContext(control_command_log, logging.DEBUG):
+            if check_fault_state_io_device(self.config.configuration.io_device):
+                if self.timestamp is None:
+                    Pub().pub(f"openWB/set/io/action/{self.config.id}/timestamp", create_timestamp())
+                control_command_log.info("Fehler des IO-Geräts: EZA-Begrenzung aktiviert für Failsafe-Modus.")
+                control_command_log.info(get_power_log_message(self.config.configuration.devices))
+                return
+
             digital_input = (
                 data.data.io_states[
                     f"io_states{self.config.configuration.io_device}"
@@ -59,8 +68,6 @@ class StepwiseControlIo(AbstractIoAction):
                 if digital_input[input_name] != digital_input_prev[input_name]
             ]) > 0
 
-            if check_fault_state_io_device(self.config.configuration.io_device):
-                control_command_log.info("Fehler des IO-Geräts: EZA-Begrenzung kann nicht erfasst werden.")
             for pattern in self.config.configuration.input_pattern:
                 for action_input, value in pattern["matrix"].items():
                     if digital_input[action_input] != value:
@@ -70,16 +77,24 @@ class StepwiseControlIo(AbstractIoAction):
                     if pattern["value"] != 1:
                         if changed:
                             Pub().pub(f"openWB/set/io/action/{self.config.id}/timestamp", create_timestamp())
-                            control_command_log.info(f"EZA-Begrenzung mit Wert {int(pattern['value']*100)}% aktiviert.")
+                            control_command_log.info(
+                                f"EZA-Begrenzung mit Wert {int(pattern['value']*100)}% aktiviert.")
                             for device in self.config.configuration.devices:
-                                if device["type"] == "inverter":
-                                    control_command_log.info(
-                                        f"Erzeugungsanlage {get_component_name_by_id(device['id'])} "
-                                        f"auf {int(pattern['value']*100)}% begrenzt."
-                                    )
+                                try:
+                                    if device["type"] == "inverter":
+                                        control_command_log.info(
+                                            f"Erzeugungsanlage {get_component_name_by_id(device['id'])} "
+                                            f"auf {int(pattern['value']*100)}% begrenzt."
+                                        )
+                                except ValueError:
+                                    control_command_log.warning(
+                                        f"Zugriff auf gelöschtes Gerät nicht möglich: {device}")
+                                except Exception:
+                                    control_command_log.exception(f"Fehler beim Zugriff auf Gerät {device}")
+                        control_command_log.info(get_power_log_message(self.config.configuration.devices))
                         break
             else:
-                if changed:
+                if changed or self.timestamp:
                     Pub().pub(f"openWB/set/io/action/{self.config.id}/timestamp", None)
                     control_command_log.info("EZA-Begrenzung aufgehoben.")
 

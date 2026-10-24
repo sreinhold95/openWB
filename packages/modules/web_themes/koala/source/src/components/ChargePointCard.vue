@@ -1,8 +1,10 @@
 <template>
   <q-card
     ref="cardRef"
-    class="card-width"
-    :class="{ 'full-height': props.fullHeight }"
+    class="charge-point-card"
+    :class="{
+      'full-height': props.fullHeight,
+    }"
   >
     <q-card-section class="row no-wrap">
       <div class="text-h6 text-bold ellipsis" :title="name">
@@ -38,11 +40,12 @@
       />
     </q-card-section>
     <q-card-section>
-      <ChargePointMessage
-        fault-message
-        :charge-point-id="props.chargePointId"
+      <BaseFaultMessage :fault-state="faultState" :message="faultMessage" />
+      <BaseFaultMessage
+        :fault-state="vehicleFaultState"
+        :message="vehicleFaultMessage"
       />
-      <ChargePointMessage :charge-point-id="props.chargePointId" />
+      <BaseMessage :message="stateMessage" type="info" />
     </q-card-section>
     <q-card-section
       class="full-width row no-wrap justify-between content-start items-center q-mt-sm"
@@ -128,7 +131,8 @@ import ChargePointLock from './ChargePointLock.vue';
 import ChargePointStateIcon from './ChargePointStateIcon.vue';
 import ChargePointPriority from './ChargePointPriority.vue';
 import ChargePointModeButtons from './ChargePointModeButtons.vue';
-import ChargePointMessage from './ChargePointMessage.vue';
+import BaseMessage from './BaseMessage.vue';
+import BaseFaultMessage from './BaseFaultMessage.vue';
 import ChargePointVehicleSelect from './ChargePointVehicleSelect.vue';
 import ChargePointSettings from './ChargePointSettings.vue';
 import ChargePointChargeLimits from './ChargePointChargeLimits.vue';
@@ -153,6 +157,30 @@ const vehicleId = computed(() => {
   return mqttStore.chargePointConnectedVehicleInfo(props.chargePointId).value
     ?.id;
 });
+
+const vehicleFaultState = computed(() =>
+  vehicleId.value !== undefined
+    ? mqttStore.vehicleFaultState(vehicleId.value)
+    : 0,
+);
+
+const vehicleFaultMessage = computed(() =>
+  vehicleId.value !== undefined
+    ? (mqttStore.vehicleFaultMessage(vehicleId.value) ?? '')
+    : '',
+);
+
+const faultState = computed(() =>
+  mqttStore.chargePointFaultState(props.chargePointId),
+);
+
+const faultMessage = computed(
+  () => mqttStore.chargePointFaultMessage(props.chargePointId) ?? '',
+);
+
+const stateMessage = computed(
+  () => mqttStore.chargePointStateMessage(props.chargePointId) ?? '',
+);
 
 const limitMode = computed(() => {
   switch (chargeMode.value) {
@@ -179,7 +207,9 @@ const settingsVisible = ref<boolean>(false);
 const chargeLimitsVisible = ref<boolean>(false);
 
 const limitEditable = computed(() => {
-  return !['scheduled_charging', 'stop'].includes(chargeMode.value);
+  return chargeMode.value
+    ? !['scheduled_charging', 'stop'].includes(chargeMode.value)
+    : false;
 });
 
 const openLimitDialog = () => {
@@ -312,10 +342,19 @@ const refreshSoc = () => {
     message: 'SoC Update angefordert.',
   });
 };
+
+const chargePointColor = computed(
+  () =>
+    mqttStore.chargePointColor(props.chargePointId) ||
+    'var(--q-charge-point-stroke)',
+);
 </script>
 <style lang="scss" scoped>
-.card-width {
+.charge-point-card {
   width: 22em;
+  border: none;
+  border-left: 4px solid v-bind(chargePointColor);
+  border-radius: 15px;
 }
 
 .q-card__section {

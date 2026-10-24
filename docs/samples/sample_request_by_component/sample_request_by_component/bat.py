@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-from typing import Optional, TypedDict, Any
+from typing import TypedDict, Any
 from modules.common import req
 from modules.common.abstract_device import AbstractBat
 from modules.common.component_state import BatState
 from modules.common.component_type import ComponentDescriptor
 from modules.common.fault_state import ComponentInfo, FaultState
 from modules.common.simcount import SimCounter
-from modules.common.store import get_bat_value_store
-from modules.devices.sample_request_by_component.sample_request_by_component.config import SampleBatSetup, SampleConfiguration
+from modules.common.store import get_component_value_store
+from modules.devices.sample_request_by_component.sample_request_by_component.config import SampleBatSetup
 from modules.common.utils.peak_filter import PeakFilter
 from modules.common.component_type import ComponentType
+from control.bat import Set as SetPoint
 
 
 class KwargsDict(TypedDict):
@@ -25,8 +26,8 @@ class SampleBat(AbstractBat):
     def initialize(self) -> None:
         self.__device_id: int = self.kwargs['device_id']
         self.ip_address: str = self.kwargs['ip_address']
-        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, prefix="speicher")
-        self.store = get_bat_value_store(self.component_config.id)
+        self.sim_counter = SimCounter(self.__device_id, self.component_config.id, self.component_config.type)
+        self.store = get_component_value_store(self.component_config.type, self.component_config.id)
         self.fault_state = FaultState(ComponentInfo.from_component_config(self.component_config))
         self.peak_filter = PeakFilter(ComponentType.BAT, self.component_config.id, self.fault_state)
 
@@ -45,11 +46,11 @@ class SampleBat(AbstractBat):
         )
         self.store.set(bat_state)
 
-    def set_power_limit(self, power_limit: Optional[int]) -> None:
+    def set_power_limit(self, setpoint: SetPoint) -> None:
         # Wenn der Speicher die Steuerung der Ladeleistung unterstützt, muss bei Übergabe einer Zahl auf aktive
         # Speichersteurung umgeschaltet werden, sodass der Speicher mit der übergebenen Leistung lädt/entlädt. Wird
         # None übergeben, muss der Speicher die Null-Punkt-Ausregelung selbst übernehmen.
-        self.client.write_register(reg, power_limit)
+        self.client.write_register(reg, setpoint.power_limit)
         # Wenn der Speicher keine Steuerung der Ladeleistung unterstützt
         pass
 
